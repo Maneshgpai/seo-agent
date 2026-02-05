@@ -1,19 +1,26 @@
 /**
  * SEO Agent Frontend Application
  * Handles form submission, reCAPTCHA verification, analysis process, and report display
- * Connects to backend API for real SEO analysis
+ * Connects to backend API for real SEO analysis.
+ * All keys/IDs (e.g. RECAPTCHA_SITE_KEY) are injected by the server from env - never hardcoded.
  */
 
-// Configuration
+// Configuration: keys and feature flags come from window.__ENV__ (injected by server from .env)
+declare global {
+  interface Window {
+    __ENV__?: {
+      RECAPTCHA_SITE_KEY?: string;
+      ENABLE_RECAPTCHA?: boolean;
+    };
+  }
+}
+
 const CONFIG = {
-  // Replace with your actual reCAPTCHA v3 site key
-  RECAPTCHA_SITE_KEY: '6LciR2EsAAAAAJI_XzTNKZ90m7glRwu75lc87MLC',
-  // API endpoints (same origin - served by Express)
+  RECAPTCHA_SITE_KEY: (typeof window !== 'undefined' && window.__ENV__?.RECAPTCHA_SITE_KEY) || '',
+  ENABLE_RECAPTCHA: (typeof window !== 'undefined' && window.__ENV__?.ENABLE_RECAPTCHA) === true,
   API_ENDPOINT: '/api/analyze',
   API_STREAM_ENDPOINT: '/api/analyze/stream',
-  // Feature flags
-  ENABLE_RECAPTCHA: false, // Set to true when reCAPTCHA is configured
-  USE_STREAMING: true, // Use Server-Sent Events for real-time progress
+  USE_STREAMING: true,
 };
 
 // Type definitions
@@ -188,6 +195,10 @@ async function handleFormSubmit(e: Event): Promise<void> {
  */
 function executeRecaptcha(): Promise<string> {
   return new Promise((resolve, reject) => {
+    if (!CONFIG.RECAPTCHA_SITE_KEY) {
+      reject(new Error('reCAPTCHA site key not configured'));
+      return;
+    }
     if (typeof grecaptcha === 'undefined') {
       reject(new Error('reCAPTCHA not loaded'));
       return;

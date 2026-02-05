@@ -6,6 +6,7 @@
 
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from 'dotenv';
@@ -31,7 +32,22 @@ const app = express();
 // Configuration
 const PORT = parseInt(process.env.PORT || '8080');
 const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY || '';
+const RECAPTCHA_SITE_KEY = process.env.RECAPTCHA_SITE_KEY || '';
 const ENABLE_RECAPTCHA = process.env.ENABLE_RECAPTCHA === 'true';
+
+/** Frontend config injected into HTML at runtime (no keys in source code) */
+function getFrontendEnv(): { RECAPTCHA_SITE_KEY: string; ENABLE_RECAPTCHA: boolean } {
+  return {
+    RECAPTCHA_SITE_KEY,
+    ENABLE_RECAPTCHA: ENABLE_RECAPTCHA && !!RECAPTCHA_SITE_KEY,
+  };
+}
+
+/** reCAPTCHA script tag; only injected when site key is set */
+function getRecaptchaScriptTag(): string {
+  if (!RECAPTCHA_SITE_KEY) return '<!-- reCAPTCHA not configured -->';
+  return `<script src="https://www.google.com/recaptcha/api.js?render=${RECAPTCHA_SITE_KEY}"></script>`;
+}
 
 // Middleware
 app.use(cors());
@@ -284,11 +300,27 @@ async function verifyRecaptcha(token: string): Promise<boolean> {
 }
 
 /**
- * Catch-all route to serve the frontend for any unmatched routes.
- * Express 5 / path-to-regexp v8 requires a named splat (*path) instead of bare *.
+ * Cache for index.html template (placeholders replaced at request time)
+ */
+let indexHtmlTemplate: string | null = null;
+
+function getIndexHtmlTemplate(): string {
+  if (indexHtmlTemplate === null) {
+    const indexPath = path.join(frontendPath, 'index.html');
+    indexHtmlTemplate = fs.readFileSync(indexPath, 'utf-8');
+  }
+  return indexHtmlTemplate;
+}
+
+/**
+ * Catch-all route: serve index.html with env-driven config injected.
+ * No keys or IDs are stored in frontend source; all come from server env.
  */
 app.get('*path', (_req: Request, res: Response) => {
-  res.sendFile(path.join(frontendPath, 'index.html'));
+  let html = getIndexHtmlTemplate();
+  html = html.replace('<!-- INJECT_RECAPTCHA_SCRIPT -->', getRecaptchaScriptTag());
+  html = html.replace('__INJECT_ENV__', JSON.stringify(getFrontendEnv()));
+  res.type('html').send(html);
 });
 
 /**
