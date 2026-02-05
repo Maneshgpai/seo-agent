@@ -1,0 +1,34 @@
+# Dependencies
+node_modules
+
+# Build outputs (will be rebuilt in container)
+dist
+frontend/app.js
+frontend/app.js.map
+
+# Development files
+.env
+.env.local
+*.log
+.DS_Store
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Test files
+*.test.ts
+*.spec.ts
+__tests__
+coverage
+
+# Documentation (not needed in container)
+*.md
+!README.md
+docs

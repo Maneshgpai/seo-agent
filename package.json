@@ -1,0 +1,50 @@
+{
+  "name": "seo-agent",
+  "version": "1.0.0",
+  "description": "SEO analysis agent for OpenClaw - analyzes websites and provides SEO recommendations",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "build:frontend": "esbuild frontend/app.ts --bundle --outfile=frontend/app.js --minify --sourcemap",
+    "build:frontend:watch": "esbuild frontend/app.ts --bundle --outfile=frontend/app.js --sourcemap --watch",
+    "build:all": "npm run build && npm run build:frontend",
+    "start": "node dist/server.js",
+    "start:cli": "node dist/index.js",
+    "server": "npm run build:all && node dist/server.js",
+    "dev": "tsx src/index.ts",
+    "dev:server": "npm run build:frontend && tsx src/server.ts",
+    "dev:frontend": "npm run build:frontend:watch",
+    "analyze": "tsx src/index.ts",
+    "docker:build": "docker build -t seo-agent .",
+    "docker:run": "docker run -p 8080:8080 --env-file .env seo-agent",
+    "deploy": "gcloud builds submit --config cloudbuild.yaml"
+  },
+  "keywords": [
+    "seo",
+    "openclaw",
+    "website-analysis",
+    "seo-audit"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "cheerio": "^1.0.0",
+    "cors": "^2.8.6",
+    "dotenv": "^16.4.5",
+    "express": "^5.2.1",
+    "puppeteer": "^23.0.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.24.0",
+    "serve": "^14.2.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
