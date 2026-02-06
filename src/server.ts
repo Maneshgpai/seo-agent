@@ -18,6 +18,7 @@ import { analyzePageSpeed } from './analyzers/pagespeed.js';
 import { generateReport, formatReportAsText } from './reporter.js';
 import { fetchPageSpeedData } from './pagespeed.js';
 import type { AnalysisDepth, SEOIssue, SEOReport, PageSpeedData } from './types.js';
+import { verifyJWT } from './jwt-middleware.js';
 
 // Load environment variables
 config();
@@ -73,7 +74,7 @@ app.get('/health', (_req: Request, res: Response) => {
 /**
  * API endpoint to analyze a single page
  */
-app.post('/api/analyze', async (req: Request, res: Response) => {
+app.post('/api/analyze', verifyJWT, async (req: Request, res: Response) => {
   try {
     const { url, email, depth = 'all', recaptchaToken } = req.body;
 
@@ -130,7 +131,7 @@ app.post('/api/analyze', async (req: Request, res: Response) => {
 /**
  * API endpoint for streaming analysis progress (Server-Sent Events)
  */
-app.get('/api/analyze/stream', async (req: Request, res: Response) => {
+app.get('/api/analyze/stream', verifyJWT, async (req: Request, res: Response) => {
   const { url, depth = 'all' } = req.query;
 
   if (!url || typeof url !== 'string') {

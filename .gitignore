@@ -31,3 +31,7 @@ coverage/
 
 SETUP(old).md
 README(old).md
+verify_recaptcha.py
+venv/
+instructions/
+.gitignore
