@@ -11,6 +11,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { config } from 'dotenv';
 import { crawlPage, fetchRobotsTxt, fetchSitemap } from './crawler.js';
+import { crawlSite } from './site-crawler.js';
+import { analyzeSite } from './site-analyzer.js';
+import type { SiteAnalysisResult } from './site-analyzer.js';
+import { formatSiteReportAsText } from './site-reporter.js';
 import { analyzeBasicSEO } from './analyzers/basic.js';
 import { analyzeIntermediateSEO } from './analyzers/intermediate.js';
 import { analyzeAdvancedSEO } from './analyzers/advanced.js';
@@ -19,6 +23,7 @@ import { generateReport, formatReportAsText } from './reporter.js';
 import { fetchPageSpeedData } from './pagespeed.js';
 import type { AnalysisDepth, SEOIssue, SEOReport, PageSpeedData } from './types.js';
 import { verifyJWT } from './jwt-middleware.js';
+import { buildPdfReport, buildPdfReportFromSite } from './pdf-report.js';
 
 // Load environment variables
 config();
@@ -72,20 +77,20 @@ app.get('/health', (_req: Request, res: Response) => {
 });
 
 /**
- * API endpoint to analyze a single page
+ * API endpoint to analyze a single page or full site (mode: single | site)
+ * Body: url, recaptchaToken?, mode?, maxPages?
  */
 app.post('/api/analyze', verifyJWT, async (req: Request, res: Response) => {
   try {
-    const { url, email, depth = 'all', recaptchaToken } = req.body;
+    const { url, recaptchaToken, mode: modeParam = 'single', maxPages: maxPagesRaw } = req.body;
+    const depth = 'all' as AnalysisDepth;
+    const maxPages = Math.min(Math.max(parseInt(String(maxPagesRaw), 10) || 50, 1), 500);
+    const mode = typeof modeParam === 'string' ? modeParam : String(modeParam ?? 'single');
+    const isSiteMode = mode.toLowerCase().trim() === 'site';
 
     // Validate required fields
     if (!url) {
       res.status(400).json({ error: 'URL is required' });
-      return;
-    }
-
-    if (!email) {
-      res.status(400).json({ error: 'Email is required' });
       return;
     }
 
@@ -106,19 +111,27 @@ app.post('/api/analyze', verifyJWT, async (req: Request, res: Response) => {
       }
     }
 
-    console.log(`Starting analysis for: ${url} (depth: ${depth})`);
+    console.log(`Starting analysis for: ${url} (mode: ${mode}, isSiteMode: ${isSiteMode}, depth: ${depth}${isSiteMode ? `, maxPages: ${maxPages}` : ''})`);
 
-    // Perform analysis
-    const report = await performAnalysis(url, depth as AnalysisDepth);
-
-    // Log the analysis (could be extended to store in database)
-    console.log(`Analysis complete for ${url}: Score ${report.scores.overall}/100`);
-
-    res.json({
-      success: true,
-      report,
-      textReport: formatReportAsText(report),
-    });
+    if (isSiteMode) {
+      const siteReport = await performSiteAnalysis(url, depth, maxPages);
+      console.log(`Site analysis complete for ${url}: ${siteReport.pageAnalyses.length} pages, average score ${siteReport.scores.averagePageScore}/100`);
+      res.json({
+        success: true,
+        report: null,
+        siteReport,
+        textReport: formatSiteReportAsText(siteReport),
+      });
+    } else {
+      const report = await performAnalysis(url, depth);
+      console.log(`Analysis complete for ${url}: Score ${report.scores.overall}/100`);
+      res.json({
+        success: true,
+        report,
+        siteReport: null,
+        textReport: formatReportAsText(report),
+      });
+    }
   } catch (error) {
     console.error('Analysis error:', error);
     res.status(500).json({
@@ -130,14 +143,21 @@ app.post('/api/analyze', verifyJWT, async (req: Request, res: Response) => {
 
 /**
  * API endpoint for streaming analysis progress (Server-Sent Events)
+ * Query: url, depth?, mode?, maxPages?
  */
 app.get('/api/analyze/stream', verifyJWT, async (req: Request, res: Response) => {
-  const { url, depth = 'all' } = req.query;
+  const { url, mode: modeParam = 'single', maxPages: maxPagesRaw } = req.query;
+  const depth = 'all' as AnalysisDepth;
+  const maxPages = Math.min(Math.max(parseInt(String(maxPagesRaw), 10) || 50, 1), 500);
+  const mode = typeof modeParam === 'string' ? modeParam : Array.isArray(modeParam) ? modeParam[0] : 'single';
+  const isSiteMode = String(mode).toLowerCase().trim() === 'site';
 
   if (!url || typeof url !== 'string') {
     res.status(400).json({ error: 'URL is required' });
     return;
   }
+
+  console.log(`[stream] mode=${mode} isSiteMode=${isSiteMode} maxPages=${maxPages}`);
 
   // Set up Server-Sent Events
   res.setHeader('Content-Type', 'text/event-stream');
@@ -145,13 +165,11 @@ app.get('/api/analyze/stream', verifyJWT, async (req: Request, res: Response) =>
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
 
-  // Helper to send SSE events
   const sendEvent = (event: string, data: object) => {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
 
   try {
-    // Validate URL
     sendEvent('step', { id: 'validate', status: 'running', title: 'Validating URL' });
     try {
       new URL(url);
@@ -163,66 +181,100 @@ app.get('/api/analyze/stream', verifyJWT, async (req: Request, res: Response) =>
     }
     sendEvent('step', { id: 'validate', status: 'done', title: 'URL validated' });
 
-    // Crawl page
-    sendEvent('step', { id: 'crawl', status: 'running', title: 'Loading page' });
-    const timeout = parseInt(process.env.REQUEST_TIMEOUT || '30000');
-    const userAgent = process.env.USER_AGENT;
-    const crawlResult = await crawlPage(url, { timeout, userAgent });
-    sendEvent('step', { id: 'crawl', status: 'done', title: 'Page loaded', detail: `${(crawlResult.loadTime / 1000).toFixed(2)}s` });
+    if (isSiteMode) {
+      // Site-wide: crawl then analyze
+      sendEvent('step', { id: 'crawl', status: 'running', title: 'Crawling website' });
+      const timeout = parseInt(process.env.REQUEST_TIMEOUT || '30000');
+      const userAgent = process.env.USER_AGENT;
+      const crawlResult = await crawlSite(url, {
+        maxPages,
+        concurrency: 3,
+        timeout,
+        userAgent,
+        respectRobotsTxt: true,
+        onPageCrawled: (pageUrl, index, total) => {
+          sendEvent('step', { id: 'crawl', status: 'running', title: 'Crawling website', detail: `Page ${index}/${total}` });
+        },
+      });
+      sendEvent('step', { id: 'crawl', status: 'done', title: 'Crawl complete', detail: `${crawlResult.pages.length} pages` });
 
-    const issues: SEOIssue[] = [];
-    const analysisDepth = depth as AnalysisDepth;
-
-    // Basic analysis
-    if (analysisDepth === 'basic' || analysisDepth === 'all') {
-      sendEvent('step', { id: 'basic', status: 'running', title: 'Running basic SEO checks' });
-      issues.push(...analyzeBasicSEO(crawlResult));
-      sendEvent('step', { id: 'basic', status: 'done', title: 'Basic checks complete' });
-    }
-
-    // Intermediate analysis
-    if (analysisDepth === 'intermediate' || analysisDepth === 'all') {
-      sendEvent('step', { id: 'intermediate', status: 'running', title: 'Running intermediate checks' });
-      issues.push(...analyzeIntermediateSEO(crawlResult));
-      sendEvent('step', { id: 'intermediate', status: 'done', title: 'Intermediate checks complete' });
-    }
-
-    // Advanced analysis
-    let pageSpeedData: PageSpeedData | null = null;
-    if (analysisDepth === 'advanced' || analysisDepth === 'all') {
-      sendEvent('step', { id: 'advanced', status: 'running', title: 'Running advanced checks' });
-      const robotsTxt = await fetchRobotsTxt(url);
-      const sitemap = await fetchSitemap(url);
-      issues.push(...analyzeAdvancedSEO(crawlResult, robotsTxt, sitemap));
-      sendEvent('step', { id: 'advanced', status: 'done', title: 'Advanced checks complete' });
-
-      // PageSpeed analysis
-      const pageSpeedApiKey = process.env.GOOGLE_PAGESPEED_API_KEY;
-      if (pageSpeedApiKey) {
-        sendEvent('step', { id: 'pagespeed', status: 'running', title: 'Fetching PageSpeed Insights' });
-        pageSpeedData = await fetchPageSpeedData(url, pageSpeedApiKey);
-        if (pageSpeedData) {
-          issues.push(...analyzePageSpeed(pageSpeedData));
-          sendEvent('step', { id: 'pagespeed', status: 'done', title: 'PageSpeed analysis complete' });
-        } else {
-          sendEvent('step', { id: 'pagespeed', status: 'warning', title: 'PageSpeed analysis skipped' });
-        }
-      } else {
-        sendEvent('step', { id: 'pagespeed', status: 'skipped', title: 'PageSpeed: No API key configured' });
+      if (crawlResult.pages.length === 0) {
+        sendEvent('error', { message: 'No pages could be crawled. Check the URL and try again.' });
+        res.end();
+        return;
       }
+
+      sendEvent('step', { id: 'basic', status: 'running', title: 'Running basic SEO checks' });
+      sendEvent('step', { id: 'basic', status: 'done', title: 'Basic checks complete' });
+      sendEvent('step', { id: 'intermediate', status: 'running', title: 'Running intermediate checks' });
+      sendEvent('step', { id: 'intermediate', status: 'done', title: 'Intermediate checks complete' });
+      sendEvent('step', { id: 'advanced', status: 'running', title: 'Running advanced checks' });
+      sendEvent('step', { id: 'advanced', status: 'done', title: 'Advanced checks complete' });
+      sendEvent('step', { id: 'pagespeed', status: 'skipped', title: 'PageSpeed: skipped in site mode' });
+
+      sendEvent('step', { id: 'report', status: 'running', title: 'Generating report' });
+      const siteReport = analyzeSite(crawlResult, depth);
+      sendEvent('step', { id: 'report', status: 'done', title: 'Report ready' });
+
+      sendEvent('complete', {
+        report: null,
+        siteReport,
+        textReport: formatSiteReportAsText(siteReport),
+      });
+    } else {
+      // Single page
+      sendEvent('step', { id: 'crawl', status: 'running', title: 'Loading page' });
+      const timeout = parseInt(process.env.REQUEST_TIMEOUT || '30000');
+      const userAgent = process.env.USER_AGENT;
+      const crawlResult = await crawlPage(url, { timeout, userAgent });
+      sendEvent('step', { id: 'crawl', status: 'done', title: 'Page loaded', detail: `${(crawlResult.loadTime / 1000).toFixed(2)}s` });
+
+      const issues: SEOIssue[] = [];
+      const analysisDepth = depth;
+
+      if (analysisDepth === 'basic' || analysisDepth === 'all') {
+        sendEvent('step', { id: 'basic', status: 'running', title: 'Running basic SEO checks' });
+        issues.push(...analyzeBasicSEO(crawlResult));
+        sendEvent('step', { id: 'basic', status: 'done', title: 'Basic checks complete' });
+      }
+      if (analysisDepth === 'intermediate' || analysisDepth === 'all') {
+        sendEvent('step', { id: 'intermediate', status: 'running', title: 'Running intermediate checks' });
+        issues.push(...analyzeIntermediateSEO(crawlResult));
+        sendEvent('step', { id: 'intermediate', status: 'done', title: 'Intermediate checks complete' });
+      }
+      let pageSpeedData: PageSpeedData | null = null;
+      if (analysisDepth === 'advanced' || analysisDepth === 'all') {
+        sendEvent('step', { id: 'advanced', status: 'running', title: 'Running advanced checks' });
+        const robotsTxt = await fetchRobotsTxt(url);
+        const sitemap = await fetchSitemap(url);
+        issues.push(...analyzeAdvancedSEO(crawlResult, robotsTxt, sitemap));
+        sendEvent('step', { id: 'advanced', status: 'done', title: 'Advanced checks complete' });
+
+        const pageSpeedApiKey = process.env.GOOGLE_PAGESPEED_API_KEY;
+        if (pageSpeedApiKey) {
+          sendEvent('step', { id: 'pagespeed', status: 'running', title: 'Fetching PageSpeed Insights' });
+          pageSpeedData = await fetchPageSpeedData(url, pageSpeedApiKey);
+          if (pageSpeedData) {
+            issues.push(...analyzePageSpeed(pageSpeedData));
+            sendEvent('step', { id: 'pagespeed', status: 'done', title: 'PageSpeed analysis complete' });
+          } else {
+            sendEvent('step', { id: 'pagespeed', status: 'warning', title: 'PageSpeed analysis skipped' });
+          }
+        } else {
+          sendEvent('step', { id: 'pagespeed', status: 'skipped', title: 'PageSpeed: No API key configured' });
+        }
+      }
+
+      sendEvent('step', { id: 'report', status: 'running', title: 'Generating report' });
+      const report = generateReport(url, analysisDepth, issues, crawlResult.metadata, pageSpeedData);
+      sendEvent('step', { id: 'report', status: 'done', title: 'Report ready' });
+
+      sendEvent('complete', {
+        report,
+        siteReport: null,
+        textReport: formatReportAsText(report),
+      });
     }
-
-    // Generate report
-    sendEvent('step', { id: 'report', status: 'running', title: 'Generating report' });
-    const report = generateReport(url, analysisDepth, issues, crawlResult.metadata, pageSpeedData);
-    sendEvent('step', { id: 'report', status: 'done', title: 'Report ready' });
-
-    // Send final report
-    sendEvent('complete', {
-      report,
-      textReport: formatReportAsText(report),
-    });
-
   } catch (error) {
     console.error('Stream analysis error:', error);
     sendEvent('error', { message: (error as Error).message });
@@ -276,6 +328,28 @@ async function performAnalysis(url: string, depth: AnalysisDepth): Promise<SEORe
 }
 
 /**
+ * Perform site-wide SEO analysis: crawl multiple pages then analyze each.
+ */
+async function performSiteAnalysis(url: string, depth: AnalysisDepth, maxPages: number): Promise<SiteAnalysisResult> {
+  const timeout = parseInt(process.env.REQUEST_TIMEOUT || '30000');
+  const userAgent = process.env.USER_AGENT;
+
+  const crawlResult = await crawlSite(url, {
+    maxPages,
+    concurrency: 3,
+    timeout,
+    userAgent,
+    respectRobotsTxt: true,
+  });
+
+  if (crawlResult.pages.length === 0) {
+    throw new Error('No pages could be crawled. Check the URL and try again.');
+  }
+
+  return analyzeSite(crawlResult, depth);
+}
+
+/**
  * Verify reCAPTCHA token with Google
  */
 async function verifyRecaptcha(token: string): Promise<boolean> {
@@ -299,6 +373,39 @@ async function verifyRecaptcha(token: string): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * POST /api/report/pdf — generate and download PDF report from JSON body
+ * Body: { report?: SEOReport, siteReport?: SiteAnalysisResult }. Single-page or site report.
+ */
+app.post('/api/report/pdf', async (req: Request, res: Response) => {
+  try {
+    const { report, siteReport } = req.body as { report?: SEOReport; siteReport?: SiteAnalysisResult };
+    const hasSiteReport = siteReport != null && siteReport.baseUrl != null && Array.isArray(siteReport.pageAnalyses);
+    if (hasSiteReport) {
+      console.log(`[PDF] Building site report for ${siteReport.baseUrl} (${siteReport.pageAnalyses.length} pages)`);
+      const pdfBuffer = await buildPdfReportFromSite(siteReport);
+      const filename = `seo-site-report-${new Date().toISOString().slice(0, 10)}.pdf`;
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.send(pdfBuffer);
+      return;
+    }
+    if (!report?.url) {
+      res.status(400).json({ error: 'Request body must include report (with url) or siteReport (with baseUrl and pageAnalyses)' });
+      return;
+    }
+    console.log(`[PDF] Building single-page report for ${report.url}`);
+    const pdfBuffer = await buildPdfReport(report);
+    const filename = `seo-report-${new Date().toISOString().slice(0, 10)}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(pdfBuffer);
+  } catch (error) {
+    console.error('PDF generation error:', error);
+    res.status(500).json({ error: 'PDF generation failed', message: (error as Error).message });
+  }
+});
 
 /**
  * Cache for index.html template (placeholders replaced at request time)

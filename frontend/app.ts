@@ -25,9 +25,7 @@ const CONFIG = {
 
 // Type definitions
 interface AnalysisOptions {
-  email: string;
   url: string;
-  depth: 'basic' | 'intermediate' | 'all';
   mode: 'single' | 'site';
   maxPages?: number;
 }
@@ -67,9 +65,21 @@ interface SEOReport {
   };
 }
 
+/** Site analysis: multiple pages with per-page scores and issues */
+interface SiteReport {
+  baseUrl: string;
+  analyzedAt: string;
+  depth: string;
+  crawlStats: { totalCrawled: number; failedPages: number; crawlDuration: number };
+  scores: { overall: number; averagePageScore: number; lowestPageScore: number; highestPageScore: number };
+  pageAnalyses: Array<{ url: string; score: number; issues: unknown[]; criticalCount: number; warningCount: number }>;
+  recommendations?: { critical: string[]; important: string[]; suggestions: string[] };
+}
+
 interface ApiResponse {
   success: boolean;
-  report: SEOReport;
+  report: SEOReport | null;
+  siteReport: SiteReport | null;
   textReport: string;
   error?: string;
 }
@@ -87,13 +97,15 @@ const overallScore = document.getElementById('overall-score') as HTMLDivElement;
 const toggleBtns = document.querySelectorAll('.toggle-btn') as NodeListOf<HTMLButtonElement>;
 const modeInput = document.getElementById('mode') as HTMLInputElement;
 const siteOptions = document.querySelector('.site-options') as HTMLDivElement;
+const downloadPdfBtn = document.getElementById('download-pdf') as HTMLButtonElement;
 const downloadJsonBtn = document.getElementById('download-json') as HTMLButtonElement;
 const downloadTextBtn = document.getElementById('download-text') as HTMLButtonElement;
 const newAnalysisBtn = document.getElementById('new-analysis') as HTMLButtonElement;
 const minimizeThinkingBtn = document.getElementById('minimize-thinking') as HTMLButtonElement;
 
-// State
+// State: single-page report or site report (mutually exclusive)
 let currentReport: SEOReport | null = null;
+let currentSiteReport: SiteReport | null = null;
 let currentTextReport: string = '';
 let thinkingSteps: ThinkingStep[] = [];
 
@@ -109,7 +121,8 @@ function init(): void {
     btn.addEventListener('click', () => handleModeToggle(btn));
   });
 
-  // Download buttons
+  // Download buttons (PDF is primary; JSON and text also available)
+  downloadPdfBtn.addEventListener('click', () => downloadReport('pdf'));
   downloadJsonBtn.addEventListener('click', () => downloadReport('json'));
   downloadTextBtn.addEventListener('click', () => downloadReport('text'));
 
@@ -119,12 +132,27 @@ function init(): void {
   // Minimize thinking panel
   minimizeThinkingBtn.addEventListener('click', toggleThinkingPanel);
 
-  // Smooth scroll for anchor links
+  // Smooth scroll for anchor links - enhanced for all devices
   document.querySelectorAll('a[href^="#"]').forEach(anchor => {
     anchor.addEventListener('click', (e) => {
       e.preventDefault();
-      const target = document.querySelector((anchor as HTMLAnchorElement).getAttribute('href')!);
-      target?.scrollIntoView({ behavior: 'smooth' });
+      const href = (anchor as HTMLAnchorElement).getAttribute('href');
+      if (!href) return;
+      
+      const target = document.querySelector(href) as HTMLElement;
+      if (target) {
+        // Get the element's position relative to the document
+        const elementPosition = target.getBoundingClientRect().top + window.pageYOffset;
+        const scrollPadding = parseInt(getComputedStyle(document.documentElement).scrollPaddingTop || '0') || 16;
+        const offsetPosition = elementPosition - scrollPadding;
+        
+        // Use window.scrollTo for reliable cross-browser support on desktop and mobile
+        // This method works consistently across all browsers and screen sizes
+        window.scrollTo({
+          top: offsetPosition,
+          behavior: 'smooth'
+        });
+      }
     });
   });
 }
@@ -149,18 +177,13 @@ function handleModeToggle(clickedBtn: HTMLButtonElement): void {
 async function handleFormSubmit(e: Event): Promise<void> {
   e.preventDefault();
 
-  // Validate form
+  // Validate form — use active toggle as source of truth for mode (not only hidden input)
   const formData = new FormData(seoForm);
-  const email = formData.get('email') as string;
   const url = formData.get('url') as string;
-  const depth = formData.get('depth') as 'basic' | 'intermediate' | 'all';
-  const mode = formData.get('mode') as 'single' | 'site';
-  const maxPages = parseInt(formData.get('maxPages') as string) || 50;
-
-  if (!validateEmail(email)) {
-    showError('Please enter a valid email address');
-    return;
-  }
+  const activeToggle = document.querySelector('.toggle-btn.active');
+  const mode = ((activeToggle?.getAttribute('data-mode') || formData.get('mode') || 'single') as string).trim().toLowerCase() === 'site' ? 'site' : 'single';
+  const maxPagesRaw = parseInt(String(formData.get('maxPages')), 10);
+  const maxPages = Math.min(Math.max(Number.isNaN(maxPagesRaw) ? 50 : maxPagesRaw, 1), 500);
 
   if (!validateUrl(url)) {
     showError('Please enter a valid URL starting with http:// or https://');
@@ -178,11 +201,9 @@ async function handleFormSubmit(e: Event): Promise<void> {
     }
   }
 
-  // Start analysis
+  // Start analysis (depth is always 'all' for full analysis)
   const options: AnalysisOptions = {
-    email,
     url,
-    depth,
     mode,
     maxPages: mode === 'site' ? maxPages : undefined,
   };
@@ -226,19 +247,17 @@ async function startAnalysis(options: AnalysisOptions, recaptchaToken: string): 
   initThinkingSteps(options);
 
   try {
-    let report: SEOReport;
-
     if (CONFIG.USE_STREAMING) {
-      // Use Server-Sent Events for real-time progress
-      report = await performStreamingAnalysis(options);
+      const result = await performStreamingAnalysis(options);
+      currentReport = result.report;
+      currentSiteReport = result.siteReport;
+      showResults(result.report, result.siteReport);
     } else {
-      // Use regular POST request
-      report = await performAnalysis(options, recaptchaToken);
+      const result = await performAnalysis(options, recaptchaToken);
+      currentReport = result.report;
+      currentSiteReport = result.siteReport;
+      showResults(result.report, result.siteReport);
     }
-    
-    // Store report and show results
-    currentReport = report;
-    showResults(report);
   } catch (error) {
     const errorMessage = (error as Error).message || 'Analysis failed. Please try again.';
     addThinkingStep('error', 'Analysis failed', errorMessage, 'error');
@@ -250,28 +269,18 @@ async function startAnalysis(options: AnalysisOptions, recaptchaToken: string): 
 
 /**
  * Initialize thinking steps based on analysis options
+ * Depth is always 'all' for full analysis
  */
 function initThinkingSteps(options: AnalysisOptions): void {
   thinkingSteps = [
     { id: 'validate', title: 'Validating URL', status: 'pending' },
     { id: 'crawl', title: options.mode === 'site' ? 'Crawling website' : 'Loading page', status: 'pending' },
+    { id: 'basic', title: 'Running basic SEO checks', status: 'pending' },
+    { id: 'intermediate', title: 'Running intermediate checks', status: 'pending' },
+    { id: 'advanced', title: 'Running advanced checks', status: 'pending' },
+    { id: 'pagespeed', title: 'Fetching PageSpeed Insights', status: 'pending' },
+    { id: 'report', title: 'Generating report', status: 'pending' },
   ];
-
-  // Add steps based on depth
-  thinkingSteps.push({ id: 'basic', title: 'Running basic SEO checks', status: 'pending' });
-
-  if (options.depth === 'intermediate' || options.depth === 'all') {
-    thinkingSteps.push({ id: 'intermediate', title: 'Running intermediate checks', status: 'pending' });
-  }
-
-  if (options.depth === 'all') {
-    thinkingSteps.push(
-      { id: 'advanced', title: 'Running advanced checks', status: 'pending' },
-      { id: 'pagespeed', title: 'Fetching PageSpeed Insights', status: 'pending' }
-    );
-  }
-
-  thinkingSteps.push({ id: 'report', title: 'Generating report', status: 'pending' });
 
   renderThinkingSteps();
 }
@@ -302,8 +311,15 @@ function renderThinkingSteps(): void {
       </div>
     </div>
   `).join('');
-  
-  // Auto-scroll to latest step
+
+  // Update panel header title to current/running step (like sample)
+  const titleEl = thinkingPanel.querySelector('.thinking-title');
+  if (titleEl) {
+    const running = thinkingSteps.find(s => s.status === 'running');
+    const lastActive = [...thinkingSteps].reverse().find(s => s.status !== 'pending');
+    titleEl.textContent = running?.title ?? lastActive?.title ?? thinkingSteps[0]?.title ?? 'AI Agent Thinking';
+  }
+
   thinkingContent.scrollTop = thinkingContent.scrollHeight;
 }
 
@@ -337,45 +353,51 @@ function updateThinkingStep(stepId: string, status: ThinkingStep['status'], deta
 /**
  * Perform analysis using Server-Sent Events for real-time progress
  */
-async function performStreamingAnalysis(options: AnalysisOptions): Promise<SEOReport> {
+async function performStreamingAnalysis(options: AnalysisOptions): Promise<{ report: SEOReport | null; siteReport: SiteReport | null }> {
   return new Promise((resolve, reject) => {
-    // Build URL with query parameters
-    const params = new URLSearchParams({
-      url: options.url,
-      depth: options.depth,
-    });
+    let resolved = false;
+    const mode = options.mode === 'site' ? 'site' : 'single';
+    const params = new URLSearchParams();
+    params.set('url', options.url);
+    params.set('depth', 'all');
+    params.set('mode', mode);
+    if (mode === 'site' && options.maxPages != null) {
+      params.set('maxPages', String(options.maxPages));
+    }
 
-    const eventSource = new EventSource(`${CONFIG.API_STREAM_ENDPOINT}?${params}`);
+    const eventSource = new EventSource(`${CONFIG.API_STREAM_ENDPOINT}?${params.toString()}`);
 
     eventSource.addEventListener('step', (event) => {
-      const data = JSON.parse(event.data);
+      const data = JSON.parse((event as MessageEvent).data);
       updateThinkingStep(data.id, data.status, data.detail || data.title);
     });
 
     eventSource.addEventListener('complete', (event) => {
-      const data = JSON.parse(event.data);
+      const data = JSON.parse((event as MessageEvent).data);
       currentTextReport = data.textReport || '';
+      resolved = true;
       eventSource.close();
-      resolve(data.report);
+      resolve({
+        report: data.report ?? null,
+        siteReport: data.siteReport ?? null,
+      });
     });
 
     eventSource.addEventListener('error', (event) => {
-      // Check if it's a custom error event or connection error
-      if (event instanceof MessageEvent) {
-        const data = JSON.parse(event.data);
-        eventSource.close();
-        reject(new Error(data.message || 'Analysis failed'));
-      } else {
-        // Connection error - might just be the stream ending
-        eventSource.close();
-        // Only reject if we haven't received a complete event
-        if (!currentReport) {
+      eventSource.close();
+      if (resolved) return;
+      if (event instanceof MessageEvent && typeof event.data === 'string' && event.data) {
+        try {
+          const data = JSON.parse(event.data);
+          reject(new Error(data.message || 'Analysis failed'));
+        } catch {
           reject(new Error('Connection to server lost'));
         }
+      } else {
+        reject(new Error('Connection to server lost'));
       }
     });
 
-    // Timeout after 3 minutes
     setTimeout(() => {
       if (eventSource.readyState !== EventSource.CLOSED) {
         eventSource.close();
@@ -388,8 +410,7 @@ async function performStreamingAnalysis(options: AnalysisOptions): Promise<SEORe
 /**
  * Perform analysis using regular POST request
  */
-async function performAnalysis(options: AnalysisOptions, recaptchaToken: string): Promise<SEOReport> {
-  // Simulate step updates for non-streaming mode
+async function performAnalysis(options: AnalysisOptions, recaptchaToken: string): Promise<{ report: SEOReport | null; siteReport: SiteReport | null }> {
   const simulateSteps = async () => {
     updateThinkingStep('validate', 'running');
     await delay(300);
@@ -397,20 +418,22 @@ async function performAnalysis(options: AnalysisOptions, recaptchaToken: string)
     updateThinkingStep('crawl', 'running');
   };
 
-  // Start simulating while waiting for response
   simulateSteps();
+
+  const body: Record<string, unknown> = {
+    url: options.url,
+    depth: 'all',
+    recaptchaToken,
+    mode: options.mode || 'single',
+  };
+  if (options.mode === 'site' && options.maxPages != null) {
+    body.maxPages = options.maxPages;
+  }
 
   const response = await fetch(CONFIG.API_ENDPOINT, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      url: options.url,
-      email: options.email,
-      depth: options.depth,
-      recaptchaToken,
-    }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   });
 
   const data: ApiResponse = await response.json();
@@ -419,50 +442,76 @@ async function performAnalysis(options: AnalysisOptions, recaptchaToken: string)
     throw new Error(data.error || 'Analysis failed');
   }
 
-  // Mark all steps as done
-  thinkingSteps.forEach(step => {
-    step.status = 'done';
-  });
+  thinkingSteps.forEach(step => { step.status = 'done'; });
   renderThinkingSteps();
-
-  // Store text report
   currentTextReport = data.textReport || '';
 
-  return data.report;
+  return {
+    report: data.report ?? null,
+    siteReport: data.siteReport ?? null,
+  };
 }
 
 /**
- * Show the results section with the report data
+ * Show the results section with the report data (single page or site)
  */
-function showResults(report: SEOReport): void {
-  // Update overall score
+function showResults(report: SEOReport | null, siteReport: SiteReport | null): void {
+  const isSite = siteReport != null && siteReport.pageAnalyses?.length > 0;
+  const score = isSite ? siteReport.scores.averagePageScore : (report?.scores.overall ?? 0);
   const scoreValue = overallScore.querySelector('.score-value') as HTMLSpanElement;
-  scoreValue.textContent = report.scores.overall.toString();
+  scoreValue.textContent = String(score);
 
-  // Update score badge color based on score
-  overallScore.style.background = getScoreGradient(report.scores.overall);
+  overallScore.style.background = getScoreGradient(score);
+  overallScore.style.color = '#fff';
 
-  // Populate summary cards
-  resultsSummary.innerHTML = `
-    <div class="summary-card">
-      <div class="value">${report.summary.totalChecks}</div>
-      <div class="label">Total Checks</div>
-    </div>
-    <div class="summary-card passed">
-      <div class="value">${report.summary.passed}</div>
-      <div class="label">Passed</div>
-    </div>
-    <div class="summary-card failed">
-      <div class="value">${report.summary.failed}</div>
-      <div class="label">Failed</div>
-    </div>
-    <div class="summary-card warnings">
-      <div class="value">${report.summary.warnings}</div>
-      <div class="label">Warnings</div>
-    </div>
-  `;
+  if (isSite) {
+    const totalIssues = siteReport.pageAnalyses.reduce((sum, p) => sum + p.issues.length, 0);
+    const totalCritical = siteReport.pageAnalyses.reduce((sum, p) => sum + p.criticalCount, 0);
+    const totalWarnings = siteReport.pageAnalyses.reduce((sum, p) => sum + p.warningCount, 0);
+    const passed = siteReport.pageAnalyses.reduce((sum, p) => sum + p.issues.filter((i: { status: string }) => i.status === 'pass').length, 0);
+    resultsSummary.innerHTML = `
+      <div class="summary-card">
+        <div class="value">${siteReport.pageAnalyses.length}</div>
+        <div class="label">Pages Analyzed</div>
+      </div>
+      <div class="summary-card passed">
+        <div class="value">${passed}</div>
+        <div class="label">Passed</div>
+      </div>
+      <div class="summary-card failed">
+        <div class="value">${totalCritical}</div>
+        <div class="label">Critical</div>
+      </div>
+      <div class="summary-card warnings">
+        <div class="value">${totalWarnings}</div>
+        <div class="label">Warnings</div>
+      </div>
+    `;
+  } else if (report) {
+    resultsSummary.innerHTML = `
+      <div class="summary-card">
+        <div class="value">${report.summary.totalChecks}</div>
+        <div class="label">Total Checks</div>
+      </div>
+      <div class="summary-card passed">
+        <div class="value">${report.summary.passed}</div>
+        <div class="label">Passed</div>
+      </div>
+      <div class="summary-card failed">
+        <div class="value">${report.summary.failed}</div>
+        <div class="label">Failed</div>
+      </div>
+      <div class="summary-card warnings">
+        <div class="value">${report.summary.warnings}</div>
+        <div class="label">Warnings</div>
+      </div>
+    `;
+  }
 
-  // Show results section
+  const resultsHeader = resultsSection.querySelector('.results-header h3');
+  if (resultsHeader) {
+    resultsHeader.textContent = isSite ? `Analysis Complete — Site (${siteReport!.pageAnalyses.length} pages)` : 'Analysis Complete';
+  }
   resultsSection.style.display = 'block';
   resultsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -478,23 +527,60 @@ function getScoreGradient(score: number): string {
 }
 
 /**
- * Download the report in specified format
+ * Download the report in specified format (PDF, JSON, or text)
+ * PDF: single-page or site report sent to server for correct PDF layout.
  */
-function downloadReport(format: 'json' | 'text'): void {
-  if (!currentReport) return;
+async function downloadReport(format: 'pdf' | 'json' | 'text'): Promise<void> {
+  const hasReport = currentReport != null;
+  const hasSiteReport =
+    currentSiteReport != null &&
+    currentSiteReport.baseUrl != null &&
+    Array.isArray(currentSiteReport.pageAnalyses);
+  if (!hasReport && !hasSiteReport) return;
+
+  if (format === 'pdf') {
+    try {
+      downloadPdfBtn.disabled = true;
+      const body = hasSiteReport ? { siteReport: currentSiteReport } : { report: currentReport };
+      const res = await fetch('/api/report/pdf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || err.error || 'PDF download failed');
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = hasSiteReport ? `seo-site-report-${getFilenameDate()}.pdf` : `seo-report-${getFilenameDate()}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      showError((e as Error).message);
+    } finally {
+      downloadPdfBtn.disabled = false;
+    }
+    return;
+  }
 
   let content: string;
   let filename: string;
   let mimeType: string;
 
   if (format === 'json') {
-    content = JSON.stringify(currentReport, null, 2);
-    filename = `seo-report-${getFilenameDate()}.json`;
+    content = hasSiteReport
+      ? JSON.stringify(currentSiteReport, null, 2)
+      : JSON.stringify(currentReport, null, 2);
+    filename = hasSiteReport ? `seo-site-report-${getFilenameDate()}.json` : `seo-report-${getFilenameDate()}.json`;
     mimeType = 'application/json';
   } else {
-    // Use the text report from the server if available
-    content = currentTextReport || formatReportAsText(currentReport);
-    filename = `seo-report-${getFilenameDate()}.txt`;
+    content = currentTextReport || (currentReport ? formatReportAsText(currentReport) : '');
+    filename = hasSiteReport ? `seo-site-report-${getFilenameDate()}.txt` : `seo-report-${getFilenameDate()}.txt`;
     mimeType = 'text/plain';
   }
 
@@ -599,6 +685,7 @@ function resetForm(): void {
   hideResults();
   hideThinkingPanel();
   currentReport = null;
+  currentSiteReport = null;
   currentTextReport = '';
   thinkingSteps = [];
   
@@ -634,7 +721,9 @@ function toggleThinkingPanel(): void {
   const content = thinkingContent;
   const isHidden = content.style.display === 'none';
   content.style.display = isHidden ? 'block' : 'none';
-  minimizeThinkingBtn.textContent = isHidden ? '−' : '+';
+  const chevron = minimizeThinkingBtn.querySelector('.thinking-chevron');
+  if (chevron) chevron.textContent = isHidden ? '▼' : '▲';
+  minimizeThinkingBtn.setAttribute('aria-expanded', String(isHidden));
 }
 
 function hideResults(): void {
@@ -673,11 +762,6 @@ function showError(message: string): void {
     toast.style.animation = 'slideOut 0.3s ease';
     setTimeout(() => toast.remove(), 300);
   }, 5000);
-}
-
-function validateEmail(email: string): boolean {
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return emailRegex.test(email);
 }
 
 function validateUrl(url: string): boolean {

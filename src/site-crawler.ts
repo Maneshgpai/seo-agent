@@ -68,13 +68,11 @@ export async function crawlSite(
     console.log(`   Found ${disallowedPaths.length} disallowed paths in robots.txt`);
   }
 
-  // Try to get URLs from sitemap
-  console.log('⏳ Fetching sitemap.xml...');
-  const sitemapContent = await fetchSitemap(baseUrl);
-  const sitemapUrls = sitemapContent ? extractUrlsFromSitemap(sitemapContent, baseDomain) : [];
-  
+  // Discover page URLs from sitemap (handles both single sitemap and sitemap index)
+  console.log('⏳ Fetching sitemap...');
+  const sitemapUrls = await fetchSitemapUrls(baseUrl, baseDomain, maxPages);
   if (sitemapUrls.length > 0) {
-    console.log(`   Found ${sitemapUrls.length} URLs in sitemap`);
+    console.log(`   Found ${sitemapUrls.length} URLs from sitemap(s)`);
   }
 
   // Initialize URL queue with start URL and sitemap URLs
@@ -170,7 +168,17 @@ export async function crawlSite(
 }
 
 /**
- * Extracts internal URLs from a crawl result
+ * Returns true if hostname is the same site as baseDomain (www vs non-www normalized)
+ */
+function isSameDomain(hostname: string, baseDomain: string): boolean {
+  const stripWww = (h: string) => (h.startsWith('www.') ? h.slice(4) : h);
+  const a = stripWww(hostname.toLowerCase());
+  const b = stripWww(baseDomain.toLowerCase());
+  return a === b || hostname.toLowerCase().endsWith('.' + b);
+}
+
+/**
+ * Extracts internal URLs from a crawl result (same site, including www/non-www)
  */
 function extractInternalUrls(
   crawlResult: CrawlResult,
@@ -183,17 +191,14 @@ function extractInternalUrls(
     if (link.isInternal && link.href) {
       try {
         const urlObj = new URL(link.href);
-        
-        // Only include same domain
-        if (urlObj.hostname === baseDomain || urlObj.hostname.endsWith('.' + baseDomain)) {
-          // Skip non-HTML resources
-          const path = urlObj.pathname.toLowerCase();
-          if (
-            !path.match(/\.(jpg|jpeg|png|gif|svg|webp|ico|css|js|pdf|zip|xml|json|woff|woff2|ttf|eot)$/) &&
-            !isUrlDisallowed(link.href, disallowedPaths)
-          ) {
-            urls.push(link.href);
-          }
+        if (!isSameDomain(urlObj.hostname, baseDomain)) continue;
+
+        const path = urlObj.pathname.toLowerCase();
+        if (
+          !path.match(/\.(jpg|jpeg|png|gif|svg|webp|ico|css|js|pdf|zip|xml|json|woff|woff2|ttf|eot)$/) &&
+          !isUrlDisallowed(link.href, disallowedPaths)
+        ) {
+          urls.push(link.href);
         }
       } catch {
         // Invalid URL, skip
@@ -261,36 +266,80 @@ function isUrlDisallowed(url: string, disallowedPaths: string[]): boolean {
   return false;
 }
 
+/** Max child sitemaps to fetch when main sitemap is an index */
+const MAX_CHILD_SITEMAPS = 15;
+
 /**
- * Extracts URLs from sitemap XML
+ * Fetches sitemap and returns page URLs. If main sitemap is an index, fetches child sitemaps.
  */
-function extractUrlsFromSitemap(sitemapContent: string, baseDomain: string): string[] {
-  const urls: string[] = [];
-  
-  // Handle sitemap index
+async function fetchSitemapUrls(
+  baseUrl: string,
+  baseDomain: string,
+  maxUrls: number
+): Promise<string[]> {
+  const sitemapContent = await fetchSitemap(baseUrl);
+  if (!sitemapContent) return [];
+
   if (sitemapContent.includes('<sitemapindex')) {
-    // Extract sitemap locations (we won't recursively fetch them for simplicity)
-    const matches = sitemapContent.matchAll(/<loc>([^<]+)<\/loc>/g);
-    for (const match of matches) {
-      if (match[1] && !match[1].includes('sitemap')) {
-        urls.push(match[1]);
-      }
-    }
-  } else {
-    // Regular sitemap
-    const matches = sitemapContent.matchAll(/<loc>([^<]+)<\/loc>/g);
-    for (const match of matches) {
+    const childSitemapLocs = extractSitemapIndexLocations(sitemapContent);
+    if (childSitemapLocs.length === 0) return [];
+
+    const allUrls: string[] = [];
+    const toFetch = childSitemapLocs.slice(0, MAX_CHILD_SITEMAPS);
+    for (const loc of toFetch) {
+      if (allUrls.length >= maxUrls) break;
       try {
-        const urlObj = new URL(match[1]);
-        if (urlObj.hostname === baseDomain || urlObj.hostname.endsWith('.' + baseDomain)) {
-          urls.push(match[1]);
+        const res = await fetch(loc);
+        if (!res.ok) continue;
+        const text = await res.text();
+        const pageUrls = parsePageUrlsFromSitemap(text, baseDomain);
+        for (const u of pageUrls) {
+          if (allUrls.length >= maxUrls) break;
+          allUrls.push(u);
         }
       } catch {
-        // Invalid URL, skip
+        // Skip failed child sitemap
       }
     }
+    return allUrls;
   }
 
+  return parsePageUrlsFromSitemap(sitemapContent, baseDomain).slice(0, maxUrls);
+}
+
+/**
+ * From sitemap index XML, returns list of child sitemap <loc> URLs
+ */
+function extractSitemapIndexLocations(sitemapIndexContent: string): string[] {
+  const locs: string[] = [];
+  const matches = sitemapIndexContent.matchAll(/<loc>\s*([^<]+)\s*<\/loc>/gi);
+  for (const match of matches) {
+    if (match[1]) locs.push(match[1].trim());
+  }
+  return locs;
+}
+
+/**
+ * Parses a single sitemap XML (urlset) and returns page URLs for the given domain
+ */
+function parsePageUrlsFromSitemap(sitemapContent: string, baseDomain: string): string[] {
+  const urls: string[] = [];
+  const matches = sitemapContent.matchAll(/<loc>\s*([^<]+)\s*<\/loc>/gi);
+  for (const match of matches) {
+    try {
+      const url = match[1].trim();
+      const urlObj = new URL(url);
+      const domain = urlObj.hostname.toLowerCase();
+      const base = baseDomain.toLowerCase();
+      const sameDomain =
+        domain === base ||
+        domain.endsWith('.' + base) ||
+        (domain.startsWith('www.') ? domain.slice(4) === base.replace(/^www\./, '') : false);
+      if (sameDomain) urls.push(url);
+    } catch {
+      // Skip invalid URL
+    }
+  }
   return urls;
 }
 

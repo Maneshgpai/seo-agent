@@ -3,376 +3,94 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Free AI-powered SEO analysis tool. Get comprehensive SEO insights with Core Web Vitals, Lighthouse scores, and actionable recommendations.">
-  <title>SEO Agent - Free AI-Powered SEO Analysis</title>
+  <meta name="description" content="Free AI-powered SEO analysis. Core Web Vitals, Lighthouse scores, and actionable recommendations.">
+  <title>SEO Agent - Free SEO Analysis</title>
   <link rel="stylesheet" href="styles.css">
-  <!-- Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-  <!-- reCAPTCHA script injected by server from RECAPTCHA_SITE_KEY env -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <!-- INJECT_RECAPTCHA_SCRIPT -->
-  <script>window.__ENV__ = __INJECT_ENV__;</script>
+  <!-- __INJECT_ENV__ is replaced by the server when serving; fallback to {} when opening file directly -->
+  <script>window.__ENV__ = typeof __INJECT_ENV__ !== 'undefined' ? __INJECT_ENV__ : {};</script>
 </head>
 <body>
-  <!-- Navigation -->
-  <nav class="navbar">
-    <div class="container">
-      <div class="nav-brand">
-        <span class="brand-icon">&#9733;</span>
-        <span class="brand-text">SEO Agent</span>
-      </div>
-      <div class="nav-links">
-        <a href="#features">Features</a>
-        <a href="#analyze">Analyze</a>
-        <a href="#why-us">Why Us</a>
-      </div>
-    </div>
-  </nav>
 
-  <!-- Hero Section -->
-  <section class="hero">
-    <div class="container">
-      <div class="hero-content">
-        <span class="hero-badge">Always Free</span>
-        <h1 class="hero-title">
-          The Best AI Agentic<br>
-          <span class="gradient-text">SEO Research</span> Ever
-        </h1>
-        <p class="hero-description">
-          Harness the power of advanced AI to analyze your website's SEO performance. 
-          Get comprehensive insights including Core Web Vitals, Lighthouse scores, 
-          and actionable recommendations - all completely free.
-        </p>
-        <a href="#analyze" class="cta-button">
-          Start Free Analysis
-          <span class="arrow">&#8594;</span>
-        </a>
-      </div>
-      <div class="hero-visual">
-        <div class="floating-card card-1">
-          <div class="card-icon green">&#10003;</div>
-          <span>Core Web Vitals</span>
-        </div>
-        <div class="floating-card card-2">
-          <div class="card-icon blue">&#9733;</div>
-          <span>Lighthouse Scores</span>
-        </div>
-        <div class="floating-card card-3">
-          <div class="card-icon purple">&#9881;</div>
-          <span>AI Recommendations</span>
-        </div>
-      </div>
-    </div>
-  </section>
+  <main class="main">
+    <!-- Hero - minimal like sample -->
+    <section class="hero">
+      <h1 class="hero-title">
+        <span class="hero-line">SEO Analysis</span>
+        <span class="hero-line accent">Made Simple</span>
+      </h1>
+      <p class="hero-sub">Core Web Vitals, Lighthouse & actionable fixes.</p>
+      <p class="hero-note">AI Powered · Open Source</p>
+    </section>
 
-  <!-- Features Section -->
-  <section id="features" class="features">
-    <div class="container">
-      <div class="section-header">
-        <span class="section-badge">Features</span>
-        <h2 class="section-title">Comprehensive SEO Analysis</h2>
-        <p class="section-description">
-          Our AI agent performs deep analysis across multiple dimensions to give you 
-          the most complete picture of your website's SEO health.
-        </p>
-      </div>
-      <div class="features-grid">
-        <div class="feature-card">
-          <div class="feature-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
-            </svg>
+    <!-- Single form + thinking + results section -->
+    <section id="analyze" class="section">
+      <div class="card">
+        <form id="seo-form" class="form">
+          <div class="form-group">
+            <label for="url">Website URL <span class="required">*</span></label>
+            <input type="url" id="url" name="url" placeholder="https://example.com" required>
           </div>
-          <h3>Core Web Vitals Analysis</h3>
-          <p>
-            Measure LCP, CLS, INP, and TTFB - the metrics Google uses to evaluate 
-            user experience. Know exactly where to optimize.
-          </p>
-        </div>
-        <div class="feature-card">
-          <div class="feature-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"/>
-              <path d="M12 6v6l4 2"/>
-            </svg>
+
+          <div class="form-group">
+            <label>Mode</label>
+            <div class="toggle-group">
+              <button type="button" class="toggle-btn active" data-mode="single">Single Page</button>
+              <button type="button" class="toggle-btn" data-mode="site">Full Site</button>
+            </div>
+            <input type="hidden" id="mode" name="mode" value="single">
           </div>
-          <h3>Lighthouse Integration</h3>
-          <p>
-            Get Performance, Accessibility, Best Practices, and SEO scores powered 
-            by Google's Lighthouse. Industry-standard metrics you can trust.
-          </p>
-        </div>
-        <div class="feature-card">
-          <div class="feature-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
-              <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
-              <line x1="12" y1="22.08" x2="12" y2="12"/>
-            </svg>
+
+          <div class="form-group site-options" style="display: none;">
+            <label for="maxPages">Max pages to crawl</label>
+            <input type="number" id="maxPages" name="maxPages" min="1" max="500" value="5">
           </div>
-          <h3>AI-Powered Insights</h3>
-          <p>
-            Our intelligent agent doesn't just report issues - it explains why they 
-            matter and provides prioritized, actionable recommendations.
-          </p>
-        </div>
-      </div>
-    </div>
-  </section>
 
-  <!-- Analysis Section -->
-  <section id="analyze" class="analyze">
-    <div class="container">
-      <div class="section-header">
-        <span class="section-badge">Analyze</span>
-        <h2 class="section-title">Start Your Free SEO Analysis</h2>
-        <p class="section-description">
-          Enter your website URL and let our AI agent do the heavy lifting. 
-          Watch the thinking process in real-time and download your comprehensive report.
-        </p>
-      </div>
+          <div class="form-actions">
+            <button type="submit" class="submit-btn" id="submit-btn">
+              <span class="btn-text">Start Analysis</span>
+              <span class="btn-loader" style="display: none;">
+                <span class="spinner"></span>
+                Analyzing...
+              </span>
+            </button>
+          </div>
+        </form>
 
-      <div class="analysis-container">
-        <!-- Analysis Form -->
-        <div class="analysis-form-wrapper">
-          <form id="seo-form" class="analysis-form">
-            <div class="form-group">
-              <label for="email">Email Address <span class="required">*</span></label>
-              <input 
-                type="email" 
-                id="email" 
-                name="email" 
-                placeholder="your@email.com"
-                required
-              >
-              <span class="input-hint">We'll send you the report and never spam</span>
-            </div>
-
-            <div class="form-group">
-              <label for="url">Website URL <span class="required">*</span></label>
-              <input 
-                type="url" 
-                id="url" 
-                name="url" 
-                placeholder="https://example.com"
-                required
-              >
-            </div>
-
-            <div class="form-group">
-              <label>Analysis Depth</label>
-              <div class="radio-group">
-                <label class="radio-option">
-                  <input type="radio" name="depth" value="basic">
-                  <span class="radio-custom"></span>
-                  <span class="radio-label">
-                    <strong>Basic</strong>
-                    <small>Title, meta, headings, canonical</small>
-                  </span>
-                </label>
-                <label class="radio-option">
-                  <input type="radio" name="depth" value="intermediate">
-                  <span class="radio-custom"></span>
-                  <span class="radio-label">
-                    <strong>Intermediate</strong>
-                    <small>+ Images, links, Open Graph</small>
-                  </span>
-                </label>
-                <label class="radio-option">
-                  <input type="radio" name="depth" value="all" checked>
-                  <span class="radio-custom"></span>
-                  <span class="radio-label">
-                    <strong>Complete</strong>
-                    <small>+ Core Web Vitals, Lighthouse</small>
-                  </span>
-                </label>
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label>Analysis Mode</label>
-              <div class="toggle-group">
-                <button type="button" class="toggle-btn active" data-mode="single">
-                  Single Page
-                </button>
-                <button type="button" class="toggle-btn" data-mode="site">
-                  Full Site
-                </button>
-              </div>
-              <input type="hidden" id="mode" name="mode" value="single">
-            </div>
-
-            <div class="form-group site-options" style="display: none;">
-              <label for="maxPages">Maximum Pages to Crawl</label>
-              <input 
-                type="number" 
-                id="maxPages" 
-                name="maxPages" 
-                min="1" 
-                max="100" 
-                value="50"
-              >
-            </div>
-
-            <div class="form-actions">
-              <button type="submit" class="submit-btn" id="submit-btn">
-                <span class="btn-text">Start Analysis</span>
-                <span class="btn-loader" style="display: none;">
-                  <span class="spinner"></span>
-                  Analyzing...
-                </span>
-              </button>
-            </div>
-
-            <p class="recaptcha-notice">
-              This site is protected by reCAPTCHA and the Google 
-              <a href="https://policies.google.com/privacy" target="_blank">Privacy Policy</a> and 
-              <a href="https://policies.google.com/terms" target="_blank">Terms of Service</a> apply.
-            </p>
-          </form>
-        </div>
-
-        <!-- Thinking Process Display -->
+        <!-- Thinking panel - collapsible -->
         <div class="thinking-panel" id="thinking-panel" style="display: none;">
-          <div class="thinking-header">
-            <div class="thinking-indicator">
-              <span class="pulse"></span>
-              <span>AI Agent Thinking</span>
-            </div>
-            <button class="minimize-btn" id="minimize-thinking">&#8722;</button>
-          </div>
-          <div class="thinking-content" id="thinking-content">
-            <!-- Thinking steps will be added here dynamically -->
-          </div>
-        </div>
-      </div>
-
-      <!-- Results Section -->
-      <div class="results-section" id="results-section" style="display: none;">
-        <div class="results-header">
-          <h3>Analysis Complete</h3>
-          <div class="score-badge" id="overall-score">
-            <span class="score-value">--</span>
-            <span class="score-label">Overall Score</span>
-          </div>
-        </div>
-
-        <div class="results-summary" id="results-summary">
-          <!-- Summary cards will be added here -->
-        </div>
-
-        <div class="results-actions">
-          <button class="download-btn" id="download-json">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="7 10 12 15 17 10"/>
-              <line x1="12" y1="15" x2="12" y2="3"/>
-            </svg>
-            Download JSON Report
+          <button type="button" class="thinking-header" id="minimize-thinking" aria-expanded="true">
+            <span class="thinking-status"></span>
+            <span class="thinking-title">AI Agent Thinking</span>
+            <span class="thinking-chevron" aria-hidden="true">▼</span>
           </button>
-          <button class="download-btn secondary" id="download-text">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-              <polyline points="14 2 14 8 20 8"/>
-              <line x1="16" y1="13" x2="8" y2="13"/>
-              <line x1="16" y1="17" x2="8" y2="17"/>
-              <polyline points="10 9 9 9 8 9"/>
-            </svg>
-            Download Text Report
-          </button>
-          <button class="new-analysis-btn" id="new-analysis">
-            Start New Analysis
-          </button>
+          <div class="thinking-content" id="thinking-content"></div>
         </div>
-      </div>
-    </div>
-  </section>
 
-  <!-- Why Us Section -->
-  <section id="why-us" class="why-us">
-    <div class="container">
-      <div class="why-us-content">
-        <div class="why-us-text">
-          <span class="section-badge">Why Choose Us</span>
-          <h2 class="section-title">Built Different</h2>
-          <ul class="benefits-list">
-            <li>
-              <span class="check-icon">&#10003;</span>
-              <div>
-                <strong>100% Free Forever</strong>
-                <p>No hidden costs, no premium tiers. Full analysis capabilities for everyone.</p>
-              </div>
-            </li>
-            <li>
-              <span class="check-icon">&#10003;</span>
-              <div>
-                <strong>Real-Time Transparency</strong>
-                <p>Watch our AI agent think through your site's SEO in real-time. No black boxes.</p>
-              </div>
-            </li>
-            <li>
-              <span class="check-icon">&#10003;</span>
-              <div>
-                <strong>Actionable Insights</strong>
-                <p>Every issue comes with a clear explanation and specific steps to fix it.</p>
-              </div>
-            </li>
-            <li>
-              <span class="check-icon">&#10003;</span>
-              <div>
-                <strong>Privacy Focused</strong>
-                <p>We don't store your data. Analysis runs on-demand and reports are yours alone.</p>
-              </div>
-            </li>
-          </ul>
-        </div>
-        <div class="why-us-visual">
-          <div class="stats-card">
-            <div class="stat">
-              <span class="stat-number">50+</span>
-              <span class="stat-label">SEO Checks</span>
+        <!-- Results -->
+        <div class="results-section" id="results-section" style="display: none;">
+          <div class="results-header">
+            <h3>Analysis Complete</h3>
+            <div class="score-badge" id="overall-score">
+              <span class="score-value">--</span>
+              <span class="score-label">Score</span>
             </div>
-            <div class="stat">
-              <span class="stat-number">4</span>
-              <span class="stat-label">Lighthouse Categories</span>
-            </div>
-            <div class="stat">
-              <span class="stat-number">5</span>
-              <span class="stat-label">Core Web Vitals</span>
-            </div>
-            <div class="stat">
-              <span class="stat-number">&infin;</span>
-              <span class="stat-label">Free Analyses</span>
-            </div>
+          </div>
+          <div class="results-summary" id="results-summary"></div>
+          <div class="results-actions">
+            <button type="button" class="btn primary" id="download-pdf" title="Download PDF report">Download PDF</button>
+            <button type="button" class="btn" id="download-json">Download JSON</button>
+            <button type="button" class="btn secondary" id="download-text">Download Text</button>
+            <button type="button" class="btn outline" id="new-analysis">New Analysis</button>
           </div>
         </div>
       </div>
-    </div>
-  </section>
+    </section>
+  </main>
 
-  <!-- Footer -->
-  <footer class="footer">
-    <div class="container">
-      <div class="footer-content">
-        <div class="footer-brand">
-          <span class="brand-icon">&#9733;</span>
-          <span class="brand-text">SEO Agent</span>
-        </div>
-        <p class="footer-tagline">Free AI-Powered SEO Analysis</p>
-      </div>
-      <div class="footer-links">
-        <a href="#features">Features</a>
-        <a href="#analyze">Analyze</a>
-        <a href="#why-us">Why Us</a>
-      </div>
-      <p class="footer-copyright">
-        &copy; 2026 SEO Agent. Built with care.
-      </p>
-    </div>
-  </footer>
-
-  <!-- Scripts -->
   <script src="app.js"></script>
 </body>
 </html>
