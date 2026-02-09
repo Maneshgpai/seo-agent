@@ -160,6 +160,7 @@ a:hover {
 
 .form-group input[type="email"],
 .form-group input[type="url"],
+.form-group input[type="text"],
 .form-group input[type="number"] {
   width: 100%;
   padding: 0.5rem 0.75rem;
@@ -179,6 +180,18 @@ a:hover {
 
 .form-group input::placeholder {
   color: rgba(255, 255, 255, 0.35);
+}
+
+/* Inline URL validation error (matches reference page.tsx behaviour) */
+.url-error {
+  display: block;
+  margin-top: 0.35rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8125rem;
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  border-radius: 0.5rem;
 }
 
 .hint {

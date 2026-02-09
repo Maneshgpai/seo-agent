@@ -86,6 +86,7 @@ interface ApiResponse {
 
 // DOM Elements
 const seoForm = document.getElementById('seo-form') as HTMLFormElement;
+const urlInput = document.getElementById('url') as HTMLInputElement | null;
 const submitBtn = document.getElementById('submit-btn') as HTMLButtonElement;
 const btnText = submitBtn.querySelector('.btn-text') as HTMLSpanElement;
 const btnLoader = submitBtn.querySelector('.btn-loader') as HTMLSpanElement;
@@ -102,6 +103,7 @@ const downloadJsonBtn = document.getElementById('download-json') as HTMLButtonEl
 const downloadTextBtn = document.getElementById('download-text') as HTMLButtonElement;
 const newAnalysisBtn = document.getElementById('new-analysis') as HTMLButtonElement;
 const minimizeThinkingBtn = document.getElementById('minimize-thinking') as HTMLButtonElement;
+const urlErrorEl = document.getElementById('url-error') as HTMLDivElement | null;
 
 // State: single-page report or site report (mutually exclusive)
 let currentReport: SEOReport | null = null;
@@ -131,6 +133,11 @@ function init(): void {
 
   // Minimize thinking panel
   minimizeThinkingBtn.addEventListener('click', toggleThinkingPanel);
+
+  // Clear URL validation error when user edits the field
+  if (urlInput) {
+    urlInput.addEventListener('input', clearUrlError);
+  }
 
   // Smooth scroll for anchor links - enhanced for all devices
   document.querySelectorAll('a[href^="#"]').forEach(anchor => {
@@ -185,10 +192,14 @@ async function handleFormSubmit(e: Event): Promise<void> {
   const maxPagesRaw = parseInt(String(formData.get('maxPages')), 10);
   const maxPages = Math.min(Math.max(Number.isNaN(maxPagesRaw) ? 50 : maxPagesRaw, 1), 500);
 
-  if (!validateUrl(url)) {
-    showError('Please enter a valid URL starting with http:// or https://');
+  // Validate URL (same rules as reference page.tsx): trim, require http/https, allow normalizing
+  const validation = validateUrl(url);
+  if (!validation.isValid) {
+    showUrlError(validation.error ?? 'Please enter a valid website URL');
     return;
   }
+  clearUrlError();
+  const finalUrl = validation.normalizedUrl ?? url;
 
   // Execute reCAPTCHA if enabled
   let recaptchaToken = '';
@@ -201,9 +212,9 @@ async function handleFormSubmit(e: Event): Promise<void> {
     }
   }
 
-  // Start analysis (depth is always 'all' for full analysis)
+  // Start analysis (depth is always 'all' for full analysis); use normalized URL
   const options: AnalysisOptions = {
-    url,
+    url: finalUrl,
     mode,
     maxPages: mode === 'site' ? maxPages : undefined,
   };
@@ -682,6 +693,7 @@ function getFilenameDate(): string {
  */
 function resetForm(): void {
   seoForm.reset();
+  clearUrlError();
   hideResults();
   hideThinkingPanel();
   currentReport = null;
@@ -764,12 +776,62 @@ function showError(message: string): void {
   }, 5000);
 }
 
-function validateUrl(url: string): boolean {
+/**
+ * Normalize URL: add https:// if no protocol (matches reference page.tsx).
+ */
+function normalizeUrl(url: string): string {
+  const trimmed = url.trim();
+  if (!trimmed) return trimmed;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
+
+/**
+ * Validate URL: require http/https, allow normalizing. Returns result object with error message and normalized URL (matches reference page.tsx).
+ */
+function validateUrl(url: string): { isValid: boolean; error?: string; normalizedUrl?: string } {
+  const trimmed = (url ?? '').trim();
+
+  if (!trimmed) {
+    return { isValid: false, error: 'Please enter a website URL' };
+  }
+
   try {
-    const parsed = new URL(url);
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return { isValid: false, error: 'URL must use http:// or https:// protocol' };
+    }
+    if (!parsed.hostname) {
+      return { isValid: false, error: 'Please enter a valid URL starting with http:// or https://' };
+    }
+    return { isValid: true, normalizedUrl: trimmed };
   } catch {
-    return false;
+    const normalized = normalizeUrl(trimmed);
+    try {
+      const parsed = new URL(normalized);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return { isValid: false, error: 'URL must use http:// or https:// protocol' };
+      }
+      return { isValid: true, normalizedUrl: normalized };
+    } catch {
+      return { isValid: false, error: 'Please enter a valid URL starting with http:// or https://' };
+    }
+  }
+}
+
+function showUrlError(message: string): void {
+  if (urlErrorEl) {
+    urlErrorEl.textContent = message;
+    urlErrorEl.style.display = 'block';
+  } else {
+    showError(message);
+  }
+}
+
+function clearUrlError(): void {
+  if (urlErrorEl) {
+    urlErrorEl.textContent = '';
+    urlErrorEl.style.display = 'none';
   }
 }
 

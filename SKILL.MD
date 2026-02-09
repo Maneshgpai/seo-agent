@@ -18,12 +18,12 @@ Whenever you (the AI agent) add, change, or remove any logic, code, config, or d
 | Path | Role |
 |------|------|
 | `src/index.ts` | CLI: parseArgs, analyzeSEO (single), analyzeSiteWide (site), printUsage. Exports analyzeSEO, analyzeSiteWide, reporters, types. |
-| `src/server.ts` | Express: static `frontend/`, /health, POST /api/analyze, GET /api/analyze/stream (SSE), POST /api/report/pdf. Single: performAnalysis → SEOReport. Site: mode=site + maxPages → performSiteAnalysis (crawlSite + analyzeSite) → SiteAnalysisResult. PDF: body { report } or { siteReport } → buildPdfReport or buildPdfReportFromSite. Catch-all serves index.html. |
+| `src/server.ts` | Express: static `frontend/`, /health, POST /api/analyze, GET /api/analyze/stream (SSE), POST /api/report/pdf. Single: performAnalysis → SEOReport. Site: mode=site + maxPages → performSiteAnalysis (crawlSite, then fetchPageSpeedForSite for first N pages when API key set, then analyzeSite with pageSpeedByUrl) → SiteAnalysisResult. PDF: body { report } or { siteReport } → buildPdfReport or buildPdfReportFromSite. Catch-all serves index.html. |
 | `src/jwt-middleware.ts` | verifyJWT: Bearer token, jose jwtVerify; issuer aidyne-solutions-website, audience seo-agent-cloud-run. Skip if no JWT_SECRET. |
 | `src/types.ts` | AnalysisDepth, Priority, Category, CheckStatus; SEOIssue, PageMetadata, HeadingStructure, ImageData, LinkData, OpenGraphData, TwitterCardData, StructuredData; CrawlResult; SEOReport, ScoreBreakdown, PageSpeedData, CoreWebVitals, LighthouseScores, LighthouseAudit. |
 | `src/crawler.ts` | crawlPage(url, opts): Puppeteer → HTML, Cheerio extract metadata, headings, images, links, OG, Twitter, JSON-LD, viewport, favicon, hreflang, hasAmp, renderBlockingResources. fetchRobotsTxt, fetchSitemap (base URL + /robots.txt, /sitemap.xml). |
 | `src/site-crawler.ts` | crawlSite(startUrl, opts): fetchRobotsTxt, fetchSitemap, parse disallow, sitemap <loc>, queue; batch crawl via crawlPage; extract internal links; respect robots, normalize URLs. SiteCrawlResult: baseUrl, pages[], failedPages, sitemapUrls, robotsTxt, crawlDuration. |
-| `src/site-analyzer.ts` | analyzeSite(crawlResult, depth): per-page basic/intermediate/advanced; aggregate by check key → SiteWideIssue (issueType, affectedPages, %); scores, summary, recommendations, technicalDetails. |
+| `src/site-analyzer.ts` | analyzeSite(crawlResult, depth, pageSpeedByUrl?): per-page basic/intermediate/advanced; when pageSpeedByUrl provided (site mode), merges PageSpeed issues and attaches pageSpeed to PageAnalysis. Aggregate by check key → SiteWideIssue; scores, summary, recommendations, technicalDetails. PageAnalysis may include pageSpeed. |
 | `src/reporter.ts` | generateReport(url, depth, issues, metadata, pageSpeedData?) → SEOReport. calculateScores (basic 40%, intermediate 35%, advanced 25%), summary, categorizeRecommendations. formatReportAsText, formatReportAsJson, getGrade, generateSummaryLine. |
 | `src/pdf-report.ts` | buildPdfReport(report) → single-page PDF. buildPdfReportFromSite(siteReport) → site PDF: analyzed URLs list, site summary scores, then per-page sections (URL, score, critical/warning counts, detailed issues table). pdfmake; header/footer; Aidyne branding. Deps: pdfmake (Roboto). |
 | `src/site-reporter.ts` | formatSiteReportAsText( SiteAnalysisResult ), formatSiteReportAsJson, generateSiteSummaryLine, generateExecutiveSummary. |
@@ -43,7 +43,7 @@ Whenever you (the AI agent) add, change, or remove any logic, code, config, or d
 ## Data flow
 
 1. **Single page**: URL → crawlPage → CrawlResult → analyzeBasicSEO + analyzeIntermediateSEO + (analyzeAdvancedSEO + fetchRobotsTxt/fetchSitemap) + optional fetchPageSpeedData → analyzePageSpeed → issues[] → generateReport → SEOReport.
-2. **Site**: URL → crawlSite → SiteCrawlResult (pages[]) → analyzeSite(depth) → per-page analyzers, aggregate SiteWideIssue → SiteAnalysisResult.
+2. **Site**: URL → crawlSite → SiteCrawlResult (pages[]) → optional fetchPageSpeedForSite(first N pages) → analyzeSite(depth, pageSpeedByUrl) → per-page analyzers + PageSpeed when present, aggregate SiteWideIssue → SiteAnalysisResult. PageSpeed runs for up to PAGESPEED_SITE_MODE_MAX_PAGES (e.g. 10) when GOOGLE_PAGESPEED_API_KEY set.
 3. **API**: /api/analyze: body url, recaptchaToken, mode?, maxPages? → if mode=site: performSiteAnalysis → { siteReport, textReport }; else performAnalysis → { report, textReport }. /api/analyze/stream: query url, mode?, maxPages? → SSE steps then complete { report, siteReport, textReport }. POST /api/report/pdf: body { report } or { siteReport } → buildPdfReport (single) or buildPdfReportFromSite (lists URLs + per-page SEO). Application/pdf download.
 4. **Env**: PORT, JWT_SECRET, GOOGLE_PAGESPEED_API_KEY, RECAPTCHA_SITE_KEY, RECAPTCHA_SECRET_KEY, ENABLE_RECAPTCHA, USER_AGENT, REQUEST_TIMEOUT.
 
@@ -54,7 +54,7 @@ Whenever you (the AI agent) add, change, or remove any logic, code, config, or d
 - **SEOIssue**: category, checkName, status (pass|fail|warning|info), description, currentValue, recommendation, priority, referenceUrl?.
 - **CrawlResult**: url, statusCode, html, loadTime, isHttps, contentLength, metadata, headings, images, links, openGraph, twitterCard, structuredData, viewport, favicon, hreflang, hasAmp, renderBlockingResources.
 - **SEOReport**: url, analyzedAt, depth, scores (basic/intermediate/advanced/overall), summary (totalChecks, passed, failed, warnings), issues, metadata, recommendations (critical/important/suggestions), pageSpeed?.
-- **SiteAnalysisResult**: baseUrl, depth, crawlStats, scores (incl. averagePageScore, lowest/highest), summary, siteWideIssues, pageAnalyses[], recommendations, technicalDetails.
+- **SiteAnalysisResult**: baseUrl, depth, crawlStats, scores (incl. averagePageScore, lowest/highest), summary, siteWideIssues, pageAnalyses[] (each may have pageSpeed when run in site mode), recommendations, technicalDetails.
 
 ---
 

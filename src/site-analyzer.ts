@@ -6,12 +6,14 @@
 import { analyzeBasicSEO } from './analyzers/basic.js';
 import { analyzeIntermediateSEO } from './analyzers/intermediate.js';
 import { analyzeAdvancedSEO } from './analyzers/advanced.js';
+import { analyzePageSpeed } from './analyzers/pagespeed.js';
 import type { 
   CrawlResult, 
   SEOIssue, 
   AnalysisDepth, 
   Category,
-  Priority 
+  Priority,
+  PageSpeedData 
 } from './types.js';
 import type { SiteCrawlResult } from './site-crawler.js';
 
@@ -33,7 +35,8 @@ export interface SiteWideIssue {
 }
 
 /**
- * Page-level analysis result
+ * Page-level analysis result.
+ * pageSpeed is set when PageSpeed Insights was run for this page (e.g. in site mode, up to a cap).
  */
 export interface PageAnalysis {
   url: string;
@@ -41,6 +44,7 @@ export interface PageAnalysis {
   issues: SEOIssue[];
   criticalCount: number;
   warningCount: number;
+  pageSpeed?: PageSpeedData;
 }
 
 /**
@@ -91,14 +95,17 @@ export interface SiteAnalysisResult {
 }
 
 /**
- * Analyzes an entire website's SEO
+ * Analyzes an entire website's SEO.
+ * Optional pageSpeedByUrl: when set (e.g. from server after fetching PageSpeed for first N pages),
+ * each page with matching URL gets PageSpeed issues merged and pageSpeed attached.
  */
 export function analyzeSite(
   crawlResult: SiteCrawlResult,
-  depth: AnalysisDepth = 'all'
+  depth: AnalysisDepth = 'all',
+  pageSpeedByUrl?: Map<string, PageSpeedData>
 ): SiteAnalysisResult {
   const pages = crawlResult.pages;
-  
+
   // Analyze each page individually
   const pageAnalyses: PageAnalysis[] = [];
   const allIssuesByCheck = new Map<string, { issue: SEOIssue; pages: { url: string; value: string | null }[] }>();
@@ -117,15 +124,22 @@ export function analyzeSite(
       pageIssues.push(...analyzeAdvancedSEO(page, crawlResult.robotsTxt, null));
     }
 
-    // Calculate page score
+    // PageSpeed: merge issues and attach data when available for this page
+    const pageSpeedData = pageSpeedByUrl?.get(page.url);
+    if (pageSpeedData) {
+      pageIssues.push(...analyzePageSpeed(pageSpeedData));
+    }
+
+    // Calculate page score (includes PageSpeed-derived issues when present)
     const pageScore = calculatePageScore(pageIssues);
-    
+
     pageAnalyses.push({
       url: page.url,
       score: pageScore,
       issues: pageIssues,
       criticalCount: pageIssues.filter(i => i.status === 'fail').length,
       warningCount: pageIssues.filter(i => i.status === 'warning').length,
+      ...(pageSpeedData && { pageSpeed: pageSpeedData }),
     });
 
     // Aggregate issues by check name for site-wide analysis

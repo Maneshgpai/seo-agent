@@ -214,6 +214,22 @@ function buildSiteDocumentDefinition(siteReport: SiteAnalysisResult): PdfMakeDoc
     } else {
       content.push({ text: 'No issues recorded for this page.', italics: true, margin: [0, 0, 0, 12] });
     }
+    // PageSpeed (site mode): show CWV + Lighthouse when available for this page
+    if (page.pageSpeed) {
+      const ps = page.pageSpeed;
+      const psRows: (string | number | object)[][] = [];
+      if (ps.coreWebVitals?.lcp) psRows.push(['LCP', ps.coreWebVitals.lcp.displayValue]);
+      if (ps.coreWebVitals?.cls) psRows.push(['CLS', ps.coreWebVitals.cls.displayValue]);
+      if (ps.lighthouseScores?.performance != null) psRows.push(['Lighthouse Performance', `${ps.lighthouseScores.performance}/100`]);
+      if (psRows.length) {
+        content.push({ text: 'PageSpeed', fontSize: 9, bold: true, color: COLORS.textMuted, margin: [0, 8, 0, 4] });
+        content.push({
+          table: { widths: [140, 'auto'], body: psRows },
+          layout: 'noBorders',
+          margin: [0, 0, 0, 12],
+        });
+      }
+    }
   }
 
   const docDefinition: PdfMakeDocDef = {

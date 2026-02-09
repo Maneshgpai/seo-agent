@@ -41,6 +41,9 @@ const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY || '';
 const RECAPTCHA_SITE_KEY = process.env.RECAPTCHA_SITE_KEY || '';
 const ENABLE_RECAPTCHA = process.env.ENABLE_RECAPTCHA === 'true';
 
+/** Max pages to run PageSpeed for in site mode (avoids timeout and API rate limits) */
+const PAGESPEED_SITE_MODE_MAX_PAGES = 10;
+
 /** Frontend config injected into HTML at runtime (no keys in source code) */
 function getFrontendEnv(): { RECAPTCHA_SITE_KEY: string; ENABLE_RECAPTCHA: boolean } {
   return {
@@ -55,9 +58,9 @@ function getRecaptchaScriptTag(): string {
   return `<script src="https://www.google.com/recaptcha/api.js?render=${RECAPTCHA_SITE_KEY}"></script>`;
 }
 
-// Middleware
+// Middleware: allow larger JSON payloads for report/siteReport (e.g. PDF request body)
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 
 // Serve static frontend files
 const frontendPath = path.join(__dirname, '..', 'frontend');
@@ -210,10 +213,26 @@ app.get('/api/analyze/stream', verifyJWT, async (req: Request, res: Response) =>
       sendEvent('step', { id: 'intermediate', status: 'done', title: 'Intermediate checks complete' });
       sendEvent('step', { id: 'advanced', status: 'running', title: 'Running advanced checks' });
       sendEvent('step', { id: 'advanced', status: 'done', title: 'Advanced checks complete' });
-      sendEvent('step', { id: 'pagespeed', status: 'skipped', title: 'PageSpeed: skipped in site mode' });
+
+      // PageSpeed in site mode: run for first N pages when API key is set
+      let pageSpeedByUrl: Map<string, PageSpeedData> | undefined;
+      const pageSpeedApiKey = process.env.GOOGLE_PAGESPEED_API_KEY;
+      if (pageSpeedApiKey && (depth === 'advanced' || depth === 'all')) {
+        sendEvent('step', { id: 'pagespeed', status: 'running', title: 'Fetching PageSpeed Insights (site sample)' });
+        pageSpeedByUrl = await fetchPageSpeedForSite(
+          crawlResult.pages,
+          pageSpeedApiKey,
+          PAGESPEED_SITE_MODE_MAX_PAGES
+        );
+        sendEvent('step', { id: 'pagespeed', status: 'done', title: `PageSpeed complete (${pageSpeedByUrl.size} pages)` });
+      } else if (!pageSpeedApiKey) {
+        sendEvent('step', { id: 'pagespeed', status: 'skipped', title: 'PageSpeed: No API key configured' });
+      } else {
+        sendEvent('step', { id: 'pagespeed', status: 'skipped', title: 'PageSpeed: not run for basic/intermediate depth' });
+      }
 
       sendEvent('step', { id: 'report', status: 'running', title: 'Generating report' });
-      const siteReport = analyzeSite(crawlResult, depth);
+      const siteReport = analyzeSite(crawlResult, depth, pageSpeedByUrl);
       sendEvent('step', { id: 'report', status: 'done', title: 'Report ready' });
 
       sendEvent('complete', {
@@ -328,7 +347,26 @@ async function performAnalysis(url: string, depth: AnalysisDepth): Promise<SEORe
 }
 
 /**
+ * Fetches PageSpeed data for the first N crawled pages (site mode).
+ * Returns a map of page URL -> PageSpeedData for use in analyzeSite.
+ */
+async function fetchPageSpeedForSite(
+  pages: { url: string }[],
+  apiKey: string,
+  maxPages: number
+): Promise<Map<string, PageSpeedData>> {
+  const map = new Map<string, PageSpeedData>();
+  const toFetch = pages.slice(0, maxPages);
+  for (const page of toFetch) {
+    const data = await fetchPageSpeedData(page.url, apiKey);
+    if (data) map.set(page.url, data);
+  }
+  return map;
+}
+
+/**
  * Perform site-wide SEO analysis: crawl multiple pages then analyze each.
+ * When GOOGLE_PAGESPEED_API_KEY is set, runs PageSpeed for the first N pages and merges results.
  */
 async function performSiteAnalysis(url: string, depth: AnalysisDepth, maxPages: number): Promise<SiteAnalysisResult> {
   const timeout = parseInt(process.env.REQUEST_TIMEOUT || '30000');
@@ -346,7 +384,17 @@ async function performSiteAnalysis(url: string, depth: AnalysisDepth, maxPages: 
     throw new Error('No pages could be crawled. Check the URL and try again.');
   }
 
-  return analyzeSite(crawlResult, depth);
+  let pageSpeedByUrl: Map<string, PageSpeedData> | undefined;
+  const pageSpeedApiKey = process.env.GOOGLE_PAGESPEED_API_KEY;
+  if (pageSpeedApiKey && (depth === 'advanced' || depth === 'all')) {
+    pageSpeedByUrl = await fetchPageSpeedForSite(
+      crawlResult.pages,
+      pageSpeedApiKey,
+      PAGESPEED_SITE_MODE_MAX_PAGES
+    );
+  }
+
+  return analyzeSite(crawlResult, depth, pageSpeedByUrl);
 }
 
 /**
