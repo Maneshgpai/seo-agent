@@ -28,7 +28,7 @@
 **Run on your computer (localhost):**
 
 ```bash
-git clone https://github.com/your-org/seo-agent.git
+git clone https://github.com/Maneshgpai/seo-agent
 cd seo-agent
 npm install
 cp .env.example .env
