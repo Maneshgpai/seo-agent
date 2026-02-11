@@ -7,13 +7,16 @@ import { analyzeBasicSEO } from './analyzers/basic.js';
 import { analyzeIntermediateSEO } from './analyzers/intermediate.js';
 import { analyzeAdvancedSEO } from './analyzers/advanced.js';
 import { analyzePageSpeed } from './analyzers/pagespeed.js';
-import type { 
-  CrawlResult, 
-  SEOIssue, 
-  AnalysisDepth, 
+import { verifySslAndMixedContent } from './ssl-security.js';
+import type {
+  CrawlResult,
+  SEOIssue,
+  AnalysisDepth,
   Category,
   Priority,
-  PageSpeedData 
+  PageSpeedData,
+  CruxData,
+  SslSecurityCheck,
 } from './types.js';
 import type { SiteCrawlResult } from './site-crawler.js';
 
@@ -37,6 +40,7 @@ export interface SiteWideIssue {
 /**
  * Page-level analysis result.
  * pageSpeed is set when PageSpeed Insights was run for this page (e.g. in site mode, up to a cap).
+ * crux is set when CrUX API was run for this page URL (real-user CWV).
  */
 export interface PageAnalysis {
   url: string;
@@ -45,6 +49,7 @@ export interface PageAnalysis {
   criticalCount: number;
   warningCount: number;
   pageSpeed?: PageSpeedData;
+  crux?: CruxData;
 }
 
 /**
@@ -92,18 +97,28 @@ export interface SiteAnalysisResult {
     averageLoadTime: number;
     totalPageSize: number;
   };
+  /** Real-user CWV for the whole site (CrUX origin-level) when CrUX API was run */
+  cruxOrigin?: CruxData;
+  /** SSL certificate validity and mixed content check for base URL (report-only) */
+  sslSecurity?: SslSecurityCheck;
+  /** When CrUX data is not available: reason and when it would become available (PDF report only) */
+  cruxUnavailableReason?: string;
+  cruxWhenAvailable?: string;
 }
 
 /**
  * Analyzes an entire website's SEO.
  * Optional pageSpeedByUrl: when set (e.g. from server after fetching PageSpeed for first N pages),
  * each page with matching URL gets PageSpeed issues merged and pageSpeed attached.
+ * Optional cruxOrigin/cruxByUrl: when set (CrUX API), site-level and per-page real-user CWV are attached.
  */
-export function analyzeSite(
+export async function analyzeSite(
   crawlResult: SiteCrawlResult,
   depth: AnalysisDepth = 'all',
-  pageSpeedByUrl?: Map<string, PageSpeedData>
-): SiteAnalysisResult {
+  pageSpeedByUrl?: Map<string, PageSpeedData>,
+  cruxOrigin?: CruxData | null,
+  cruxByUrl?: Map<string, CruxData>
+): Promise<SiteAnalysisResult> {
   const pages = crawlResult.pages;
 
   // Analyze each page individually
@@ -130,6 +145,8 @@ export function analyzeSite(
       pageIssues.push(...analyzePageSpeed(pageSpeedData));
     }
 
+    const pageCrux = cruxByUrl?.get(page.url);
+
     // Calculate page score (includes PageSpeed-derived issues when present)
     const pageScore = calculatePageScore(pageIssues);
 
@@ -140,6 +157,7 @@ export function analyzeSite(
       criticalCount: pageIssues.filter(i => i.status === 'fail').length,
       warningCount: pageIssues.filter(i => i.status === 'warning').length,
       ...(pageSpeedData && { pageSpeed: pageSpeedData }),
+      ...(pageCrux && { crux: pageCrux }),
     });
 
     // Aggregate issues by check name for site-wide analysis
@@ -175,6 +193,13 @@ export function analyzeSite(
   // Calculate technical details
   const technicalDetails = calculateTechnicalDetails(crawlResult);
 
+  // SSL & mixed content for base URL (report-only; no logging)
+  let sslSecurity: SslSecurityCheck | undefined;
+  if (crawlResult.pages.length > 0) {
+    const firstPage = crawlResult.pages[0];
+    sslSecurity = await verifySslAndMixedContent(firstPage.url, firstPage.html);
+  }
+
   return {
     baseUrl: crawlResult.baseUrl,
     analyzedAt: new Date().toISOString(),
@@ -187,6 +212,8 @@ export function analyzeSite(
     },
     scores,
     summary,
+    ...(cruxOrigin && { cruxOrigin }),
+    ...(sslSecurity && { sslSecurity }),
     siteWideIssues,
     pageAnalyses,
     recommendations,

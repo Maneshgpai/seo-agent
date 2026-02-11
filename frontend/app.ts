@@ -23,11 +23,11 @@ const CONFIG = {
   USE_STREAMING: true,
 };
 
-// Type definitions
+// Type definitions — always Full Site mode
 interface AnalysisOptions {
   url: string;
-  mode: 'single' | 'site';
-  maxPages?: number;
+  mode: 'site';
+  maxPages: number;
 }
 
 interface ThinkingStep {
@@ -95,9 +95,6 @@ const thinkingContent = document.getElementById('thinking-content') as HTMLDivEl
 const resultsSection = document.getElementById('results-section') as HTMLDivElement;
 const resultsSummary = document.getElementById('results-summary') as HTMLDivElement;
 const overallScore = document.getElementById('overall-score') as HTMLDivElement;
-const toggleBtns = document.querySelectorAll('.toggle-btn') as NodeListOf<HTMLButtonElement>;
-const modeInput = document.getElementById('mode') as HTMLInputElement;
-const siteOptions = document.querySelector('.site-options') as HTMLDivElement;
 const downloadPdfBtn = document.getElementById('download-pdf') as HTMLButtonElement;
 const downloadJsonBtn = document.getElementById('download-json') as HTMLButtonElement;
 const downloadTextBtn = document.getElementById('download-text') as HTMLButtonElement;
@@ -117,11 +114,6 @@ let thinkingSteps: ThinkingStep[] = [];
 function init(): void {
   // Form submission handler
   seoForm.addEventListener('submit', handleFormSubmit);
-
-  // Toggle buttons for analysis mode
-  toggleBtns.forEach(btn => {
-    btn.addEventListener('click', () => handleModeToggle(btn));
-  });
 
   // Download buttons (PDF is primary; JSON and text also available)
   downloadPdfBtn.addEventListener('click', () => downloadReport('pdf'));
@@ -165,32 +157,16 @@ function init(): void {
 }
 
 /**
- * Handle mode toggle between single page and full site
- */
-function handleModeToggle(clickedBtn: HTMLButtonElement): void {
-  toggleBtns.forEach(btn => btn.classList.remove('active'));
-  clickedBtn.classList.add('active');
-  
-  const mode = clickedBtn.dataset.mode as 'single' | 'site';
-  modeInput.value = mode;
-  
-  // Show/hide site-specific options
-  siteOptions.style.display = mode === 'site' ? 'block' : 'none';
-}
-
-/**
  * Handle form submission
  */
 async function handleFormSubmit(e: Event): Promise<void> {
   e.preventDefault();
 
-  // Validate form — use active toggle as source of truth for mode (not only hidden input)
+  // Validate form — always Full Site mode
   const formData = new FormData(seoForm);
   const url = formData.get('url') as string;
-  const activeToggle = document.querySelector('.toggle-btn.active');
-  const mode = ((activeToggle?.getAttribute('data-mode') || formData.get('mode') || 'single') as string).trim().toLowerCase() === 'site' ? 'site' : 'single';
   const maxPagesRaw = parseInt(String(formData.get('maxPages')), 10);
-  const maxPages = Math.min(Math.max(Number.isNaN(maxPagesRaw) ? 50 : maxPagesRaw, 1), 500);
+  const maxPages = Math.min(Math.max(Number.isNaN(maxPagesRaw) ? 1 : maxPagesRaw, 1), 500);
 
   // Validate URL (same rules as reference page.tsx): trim, require http/https, allow normalizing
   const validation = validateUrl(url);
@@ -215,8 +191,8 @@ async function handleFormSubmit(e: Event): Promise<void> {
   // Start analysis (depth is always 'all' for full analysis); use normalized URL
   const options: AnalysisOptions = {
     url: finalUrl,
-    mode,
-    maxPages: mode === 'site' ? maxPages : undefined,
+    mode: 'site',
+    maxPages,
   };
 
   await startAnalysis(options, recaptchaToken);
@@ -285,11 +261,12 @@ async function startAnalysis(options: AnalysisOptions, recaptchaToken: string): 
 function initThinkingSteps(options: AnalysisOptions): void {
   thinkingSteps = [
     { id: 'validate', title: 'Validating URL', status: 'pending' },
-    { id: 'crawl', title: options.mode === 'site' ? 'Crawling website' : 'Loading page', status: 'pending' },
+    { id: 'crawl', title: 'Crawling website', status: 'pending' },
     { id: 'basic', title: 'Running basic SEO checks', status: 'pending' },
     { id: 'intermediate', title: 'Running intermediate checks', status: 'pending' },
     { id: 'advanced', title: 'Running advanced checks', status: 'pending' },
     { id: 'pagespeed', title: 'Fetching PageSpeed Insights', status: 'pending' },
+    { id: 'crux', title: 'Fetching Chrome UX Report (real-user metrics)', status: 'pending' },
     { id: 'report', title: 'Generating report', status: 'pending' },
   ];
 
@@ -350,13 +327,21 @@ function getStepIcon(status: string): string {
 }
 
 /**
- * Update a thinking step's status
+ * Update a thinking step's status.
+ * When report step starts, mark crux as skipped if still pending (no CrUX API key or not run).
  */
 function updateThinkingStep(stepId: string, status: ThinkingStep['status'], detail?: string): void {
   const step = thinkingSteps.find(s => s.id === stepId);
   if (step) {
     step.status = status;
     if (detail !== undefined) step.detail = detail;
+    if (stepId === 'report' && status === 'running') {
+      const cruxStep = thinkingSteps.find(s => s.id === 'crux');
+      if (cruxStep?.status === 'pending') {
+        cruxStep.status = 'skipped';
+        cruxStep.detail = 'Skipped (no API key or not run)';
+      }
+    }
     renderThinkingSteps();
   }
 }
@@ -367,14 +352,11 @@ function updateThinkingStep(stepId: string, status: ThinkingStep['status'], deta
 async function performStreamingAnalysis(options: AnalysisOptions): Promise<{ report: SEOReport | null; siteReport: SiteReport | null }> {
   return new Promise((resolve, reject) => {
     let resolved = false;
-    const mode = options.mode === 'site' ? 'site' : 'single';
     const params = new URLSearchParams();
     params.set('url', options.url);
     params.set('depth', 'all');
-    params.set('mode', mode);
-    if (mode === 'site' && options.maxPages != null) {
-      params.set('maxPages', String(options.maxPages));
-    }
+    params.set('mode', 'site');
+    params.set('maxPages', String(options.maxPages));
 
     const eventSource = new EventSource(`${CONFIG.API_STREAM_ENDPOINT}?${params.toString()}`);
 
@@ -435,11 +417,9 @@ async function performAnalysis(options: AnalysisOptions, recaptchaToken: string)
     url: options.url,
     depth: 'all',
     recaptchaToken,
-    mode: options.mode || 'single',
+    mode: 'site',
+    maxPages: options.maxPages,
   };
-  if (options.mode === 'site' && options.maxPages != null) {
-    body.maxPages = options.maxPages;
-  }
 
   const response = await fetch(CONFIG.API_ENDPOINT, {
     method: 'POST',
@@ -700,13 +680,10 @@ function resetForm(): void {
   currentSiteReport = null;
   currentTextReport = '';
   thinkingSteps = [];
-  
-  // Reset toggle buttons
-  toggleBtns.forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.mode === 'single');
-  });
-  modeInput.value = 'single';
-  siteOptions.style.display = 'none';
+
+  // Reset Max Pages to default
+  const maxPagesInput = document.getElementById('maxPages') as HTMLInputElement;
+  if (maxPagesInput) maxPagesInput.value = '1';
 
   // Scroll to form
   document.getElementById('analyze')?.scrollIntoView({ behavior: 'smooth' });

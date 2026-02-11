@@ -4,6 +4,7 @@
  */
 
 import type { SiteAnalysisResult, SiteWideIssue, PageAnalysis } from './site-analyzer.js';
+import { formatCruxCollectionPeriod } from './crux.js';
 
 /**
  * Formats site-wide report as human-readable text
@@ -60,6 +61,40 @@ export function formatSiteReportAsText(report: SiteAnalysisResult): string {
   lines.push(`  Avg Load Time:     ${report.technicalDetails.averageLoadTime}ms`);
   lines.push(`  Total Page Size:   ${formatBytes(report.technicalDetails.totalPageSize)}`);
   lines.push('');
+
+  // SSL & Mixed Content (report-only; never logged)
+  if (report.sslSecurity) {
+    lines.push('─'.repeat(80));
+    lines.push('                    SSL & MIXED CONTENT');
+    lines.push('─'.repeat(80));
+    lines.push('');
+    lines.push(`  SSL Certificate:  ${report.sslSecurity.sslValid ? '✓ Valid' : `✗ Invalid (${report.sslSecurity.sslError || 'unknown'})`}`);
+    lines.push(`  Mixed Content:    ${report.sslSecurity.mixedContent.hasMixedContent ? `✗ ${report.sslSecurity.mixedContent.insecureUrls.length} insecure resource(s) loaded` : '✓ None detected'}`);
+    if (report.sslSecurity.mixedContent.hasMixedContent && report.sslSecurity.mixedContent.insecureUrls.length > 0) {
+      report.sslSecurity.mixedContent.insecureUrls.slice(0, 10).forEach((u) => lines.push(`    - ${truncateUrl(u, 65)}`));
+      if (report.sslSecurity.mixedContent.insecureUrls.length > 10) {
+        lines.push(`    ... and ${report.sslSecurity.mixedContent.insecureUrls.length - 10} more`);
+      }
+    }
+    lines.push('');
+  }
+
+  // Real User Metrics (CrUX) — site-level when available
+  if (report.cruxOrigin?.coreWebVitals) {
+    const cwv = report.cruxOrigin.coreWebVitals;
+    const getIcon = (r: string) => (r === 'good' ? '✓' : r === 'needs-improvement' ? '⚠' : '✗');
+    lines.push('─'.repeat(80));
+    lines.push('                 REAL USER METRICS (Chrome UX Report – site)');
+    lines.push('─'.repeat(80));
+    lines.push('');
+    if (cwv.lcp) lines.push(`  LCP:  ${getIcon(cwv.lcp.rating)} ${cwv.lcp.displayValue}`);
+    if (cwv.cls) lines.push(`  CLS:  ${getIcon(cwv.cls.rating)} ${cwv.cls.displayValue}`);
+    if (cwv.fcp) lines.push(`  FCP:  ${getIcon(cwv.fcp.rating)} ${cwv.fcp.displayValue}`);
+    if (cwv.inp) lines.push(`  INP:  ${getIcon(cwv.inp.rating)} ${cwv.inp.displayValue}`);
+    if (cwv.ttfb) lines.push(`  TTFB: ${getIcon(cwv.ttfb.rating)} ${cwv.ttfb.displayValue}`);
+    lines.push(`  Period: ${formatCruxCollectionPeriod(report.cruxOrigin.collectionPeriod)}`);
+    lines.push('');
+  }
 
   // Summary
   lines.push('─'.repeat(80));

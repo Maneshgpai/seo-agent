@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Free AI-powered SEO analysis. Core Web Vitals, Lighthouse scores, and actionable recommendations.">
-  <title>SEO Agent - Free SEO Analysis</title>
+  <meta name="description" content="Free AI-powered SEO Audit. Core Web Vitals, Lighthouse scores, and actionable recommendations.">
+  <title>SEO Agent - Free SEO Audit</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -19,7 +19,7 @@
     <!-- Hero - minimal like sample -->
     <section class="hero">
       <h1 class="hero-title">
-        <span class="hero-line">SEO Analysis</span>
+        <span class="hero-line">SEO Audit</span>
         <span class="hero-line accent">Made Simple</span>
       </h1>
       <p class="hero-sub">Core Web Vitals, Lighthouse & actionable fixes.</p>
@@ -37,22 +37,13 @@
           </div>
 
           <div class="form-group">
-            <label>Mode</label>
-            <div class="toggle-group">
-              <button type="button" class="toggle-btn active" data-mode="single">Single Page</button>
-              <button type="button" class="toggle-btn" data-mode="site">Full Site</button>
-            </div>
-            <input type="hidden" id="mode" name="mode" value="single">
-          </div>
-
-          <div class="form-group site-options" style="display: none;">
             <label for="maxPages">Max pages to crawl</label>
-            <input type="number" id="maxPages" name="maxPages" min="1" max="500" value="5">
+            <input type="number" id="maxPages" name="maxPages" min="1" max="500" value="1">
           </div>
 
           <div class="form-actions">
             <button type="submit" class="submit-btn" id="submit-btn">
-              <span class="btn-text">Start Analysis</span>
+              <span class="btn-text">Start Audit</span>
               <span class="btn-loader" style="display: none;">
                 <span class="spinner"></span>
                 Analyzing...
@@ -74,7 +65,7 @@
         <!-- Results -->
         <div class="results-section" id="results-section" style="display: none;">
           <div class="results-header">
-            <h3>Analysis Complete</h3>
+            <h3>Audit Complete</h3>
             <div class="score-badge" id="overall-score">
               <span class="score-value">--</span>
               <span class="score-label">Score</span>
@@ -85,7 +76,7 @@
             <button type="button" class="btn primary" id="download-pdf" title="Download PDF report">Download PDF</button>
             <button type="button" class="btn" id="download-json">Download JSON</button>
             <button type="button" class="btn secondary" id="download-text">Download Text</button>
-            <button type="button" class="btn outline" id="new-analysis">New Analysis</button>
+            <button type="button" class="btn outline" id="new-analysis">New Audit</button>
           </div>
         </div>
       </div>

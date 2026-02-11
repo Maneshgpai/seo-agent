@@ -252,6 +252,7 @@ export function getMetricName(metricKey: string): string {
     lcp: 'Largest Contentful Paint (LCP)',
     cls: 'Cumulative Layout Shift (CLS)',
     fid: 'First Input Delay (FID)',
+    fcp: 'First Contentful Paint (FCP)',
     inp: 'Interaction to Next Paint (INP)',
     ttfb: 'Time to First Byte (TTFB)',
   };
@@ -266,8 +267,61 @@ export function getMetricThresholds(metricKey: string): { good: string; poor: st
     lcp: { good: '≤ 2.5s', poor: '> 4.0s' },
     cls: { good: '≤ 0.1', poor: '> 0.25' },
     fid: { good: '≤ 100ms', poor: '> 300ms' },
+    fcp: { good: '≤ 1.8s', poor: '> 3.0s' },
     inp: { good: '≤ 200ms', poor: '> 500ms' },
     ttfb: { good: '≤ 800ms', poor: '> 1800ms' },
   };
   return thresholds[metricKey] || { good: 'N/A', poor: 'N/A' };
+}
+
+/**
+ * Fetches PageSpeed data for the first N crawled pages (site mode).
+ * Runs fetches in parallel with a concurrency cap to avoid rate limits.
+ * Returns a map of page URL -> PageSpeedData for use in analyzeSite.
+ */
+export async function fetchPageSpeedForSite(
+  pages: { url: string }[],
+  apiKey: string,
+  maxPages: number,
+  concurrency = 4
+): Promise<Map<string, PageSpeedData>> {
+  const map = new Map<string, PageSpeedData>();
+  const toFetch = pages.slice(0, maxPages);
+  if (toFetch.length === 0) return map;
+
+  // Process in batches of [concurrency] to run in parallel while respecting limits
+  for (let i = 0; i < toFetch.length; i += concurrency) {
+    const batch = toFetch.slice(i, i + concurrency);
+    const results = await Promise.all(
+      batch.map(async (page) => {
+        const data = await fetchPageSpeedData(page.url, apiKey);
+        return { url: page.url, data } as const;
+      })
+    );
+    for (const { url, data } of results) {
+      if (data) map.set(url, data);
+    }
+  }
+  return map;
+}
+
+/**
+ * Returns rating from numeric value for a CWV metric (used by CrUX p75 and lab data).
+ * Thresholds: LCP 2500/4000ms, CLS 0.1/0.25, FCP 1800/3000ms, INP 200/500ms, TTFB 800/1800ms.
+ */
+export function getRatingFromNumericValue(metricKey: string, value: number): MetricRating {
+  switch (metricKey) {
+    case 'lcp':
+      return value <= 2500 ? 'good' : value <= 4000 ? 'needs-improvement' : 'poor';
+    case 'cls':
+      return value <= 0.1 ? 'good' : value <= 0.25 ? 'needs-improvement' : 'poor';
+    case 'fcp':
+      return value <= 1800 ? 'good' : value <= 3000 ? 'needs-improvement' : 'poor';
+    case 'inp':
+      return value <= 200 ? 'good' : value <= 500 ? 'needs-improvement' : 'poor';
+    case 'ttfb':
+      return value <= 800 ? 'good' : value <= 1800 ? 'needs-improvement' : 'poor';
+    default:
+      return 'needs-improvement';
+  }
 }

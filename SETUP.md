@@ -51,11 +51,12 @@ Wait until it finishes (it may take 1–2 minutes).
    - **Windows (Command Prompt):** `copy .env.example .env`
    - **Mac/Linux:** `cp .env.example .env`
 2. Open `.env` in a text editor. You can leave everything as-is for a first run.  
-   To add **Google PageSpeed** later, add:
+   To add **Google PageSpeed** or **Chrome UX Report (CrUX)** later, add:
    ```bash
    GOOGLE_PAGESPEED_API_KEY=your_key_here
+   CRUX_API_KEY=your_crux_key_here
    ```
-   (See README for how to get the key and set “Application restrictions” to **None** or **IP addresses**.)
+   (See README for PageSpeed and CrUX setup. CrUX is free, 150 queries/min.)
 
 ## Step 4: Start the App
 
@@ -136,6 +137,13 @@ After a few minutes you’ll see a **Service URL**. That is your live app (e.g. 
 
 Your app will then use PageSpeed for Core Web Vitals and Lighthouse scores.
 
+## Step 4b (Optional): Add CrUX API Key in the Cloud
+
+To include real-user Core Web Vitals (Chrome UX Report), enable **Chrome UX Report API** in the same GCP project, then in Cloud Run → **Edit & deploy new revision** → **Variables & Secrets** add:
+
+- Name: `CRUX_API_KEY`
+- Value: your API key (can be the same key with CrUX API enabled, or a separate key)
+
 ---
 
 # Part 3: Deploy to Microsoft Azure
@@ -203,12 +211,12 @@ az containerapp show --name seo-agent --resource-group YourResourceGroup --query
 
 Open `https://<that-address>` in your browser to use the app.
 
-## Optional: Add PageSpeed Key in Azure
+## Optional: Add PageSpeed and CrUX Keys in Azure
 
 1. In [Azure Portal](https://portal.azure.com) go to **Container Apps** → **seo-agent** → **Containers** → **Edit and deploy**.
 2. Under **Environment variables** add:
-   - Name: `GOOGLE_PAGESPEED_API_KEY`
-   - Value: your API key
+   - `GOOGLE_PAGESPEED_API_KEY` = your PageSpeed API key
+   - `CRUX_API_KEY` = your Chrome UX Report API key (optional; enables real-user CWV)
 3. Save and redeploy.
 
 ---
@@ -268,13 +276,13 @@ Enter your **Access Key ID** and **Secret Access Key** (from AWS Console → you
 
 When the service status is **Running**, open the **Default domain** URL in your browser.
 
-## Step 5 (Optional): Add PageSpeed Key in AWS
+## Step 5 (Optional): Add PageSpeed and CrUX Keys in AWS
 
 1. In App Runner, open your **seo-agent** service.
 2. Go to the **Configuration** tab → **Edit**.
 3. Under **Environment variables** add:
-   - Key: `GOOGLE_PAGESPEED_API_KEY`
-   - Value: your API key
+   - `GOOGLE_PAGESPEED_API_KEY` = your PageSpeed API key
+   - `CRUX_API_KEY` = your Chrome UX Report API key (optional)
 4. Save and redeploy.
 
 ---
@@ -304,9 +312,9 @@ sudo apt-get update
 sudo apt-get install -y libx11-xcb1 libxcomposite1 libxdamage1 libxi6 libxtst6 libnss3 libcups2 libxss1 libxrandr2 libasound2 libatk1.0-0 libgtk-3-0
 ```
 
-## PageSpeed API returns “403” or “referer blocked”
+## PageSpeed or CrUX API returns “403” or “referer blocked”
 
-In Google Cloud Console → **APIs & Services** → **Credentials** → your API key, set **Application restrictions** to **None** (or **IP addresses** for production). Do **not** use “HTTP referrers” for this key, because the server calls the API and has no referrer.
+In Google Cloud Console → **APIs & Services** → **Credentials** → your API key, set **Application restrictions** to **None** (or **IP addresses** for production). Do **not** use “HTTP referrers” for this key, because the server calls the API and has no referrer. For CrUX, ensure **Chrome UX Report API** is enabled for the project.
 
 ## Analysis is very slow or times out
 

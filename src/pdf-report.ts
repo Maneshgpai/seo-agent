@@ -9,6 +9,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import type { SEOReport, SEOIssue } from './types.js';
 import type { SiteAnalysisResult } from './site-analyzer.js';
+import { formatCruxCollectionPeriod } from './crux.js';
 
 // pdfmake document definition shape (no @types/pdfmake)
 interface PdfMakeDocDef {
@@ -118,7 +119,7 @@ function buildSiteDocumentDefinition(siteReport: SiteAnalysisResult): PdfMakeDoc
       widths: [120, '*'],
       body: [
         [{ text: 'Base URL:', bold: true }, { text: siteReport.baseUrl }],
-        [{ text: 'Analysis Date:', bold: true }, { text: new Date(siteReport.analyzedAt).toLocaleString() }],
+        [{ text: 'Analysis Date:', bold: true }, { text: new Date(siteReport.analyzedAt).toLocaleString('en-US', { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'medium' }) + ' UTC' }],
         [{ text: 'Depth:', bold: true }, { text: String(siteReport.depth) }],
         [
           { text: 'Crawl stats:', bold: true },
@@ -172,6 +173,68 @@ function buildSiteDocumentDefinition(siteReport: SiteAnalysisResult): PdfMakeDoc
     margin: [0, 0, 0, 16],
   });
 
+  // ---- SSL & Mixed Content (site report, report-only) ----
+  if (siteReport.sslSecurity) {
+    content.push({ text: 'SSL & Mixed Content', style: 'sectionHeader' });
+    const ssl = siteReport.sslSecurity;
+    const sslValidText = ssl.sslValid ? { text: 'SSL Certificate: Valid', color: COLORS.pass } : { text: `SSL Certificate: Invalid (${ssl.sslError || 'unknown'})`, color: COLORS.fail };
+    const mixedText = ssl.mixedContent.hasMixedContent
+      ? { text: `Mixed Content: ${ssl.mixedContent.insecureUrls.length} insecure resource(s)`, color: COLORS.fail }
+      : { text: 'Mixed Content: None detected', color: COLORS.pass };
+    content.push({ text: [sslValidText, { text: '  •  ' }, mixedText], margin: [0, 0, 0, 8] });
+    if (ssl.mixedContent.hasMixedContent && ssl.mixedContent.insecureUrls.length > 0) {
+      content.push({
+        ul: ssl.mixedContent.insecureUrls.slice(0, 8).map((u) => ({ text: u, fontSize: 8 })),
+        margin: [0, 0, 0, 16],
+      });
+    } else {
+      content.push({ text: ' ', margin: [0, 0, 0, 8] });
+    }
+  }
+
+  // ---- Real User Metrics (CrUX) – site-level ----
+  if (siteReport.cruxOrigin?.coreWebVitals) {
+    content.push({ text: 'Real User Metrics (Chrome UX Report – site)', style: 'sectionHeader' });
+    const cwv = siteReport.cruxOrigin.coreWebVitals;
+    const cwvRows: (string | number | object)[][] = [];
+    if (cwv.lcp) cwvRows.push(['LCP', cwv.lcp.displayValue]);
+    if (cwv.cls) cwvRows.push(['CLS', cwv.cls.displayValue]);
+    if (cwv.fcp) cwvRows.push(['FCP', cwv.fcp.displayValue]);
+    if (cwv.inp) cwvRows.push(['INP', cwv.inp.displayValue]);
+    if (cwv.ttfb) cwvRows.push(['TTFB', cwv.ttfb.displayValue]);
+    if (cwvRows.length) {
+      content.push({
+        table: { widths: [80, 'auto'], body: cwvRows },
+        layout: 'noBorders',
+        margin: [0, 0, 0, 8],
+      });
+      content.push({
+        text: `Period: ${formatCruxCollectionPeriod(siteReport.cruxOrigin.collectionPeriod)}`,
+        fontSize: 9,
+        color: COLORS.textMuted,
+        margin: [0, 0, 0, 16],
+      });
+    }
+  } else {
+    // CrUX Data Availability: show when CrUX data is not available (PDF only)
+    content.push({ text: 'CrUX Data Availability', style: 'sectionHeader' });
+    content.push({
+      text: ['Status: ', { text: 'Not available', color: COLORS.warning, bold: true }],
+      margin: [0, 0, 0, 4],
+    });
+    content.push({
+      text: ['Why: ', siteReport.cruxUnavailableReason ?? 'CrUX data was not fetched for this analysis.'],
+      fontSize: 9,
+      margin: [0, 0, 0, 4],
+    });
+    content.push({
+      text: ['When available: ', siteReport.cruxWhenAvailable ?? 'Configure CRUX_API_KEY and use depth=advanced or all.'],
+      fontSize: 9,
+      color: COLORS.textMuted,
+      margin: [0, 0, 0, 16],
+    });
+  }
+
   // ---- Site recommendations (optional) ----
   if (siteReport.recommendations) {
     const recs = [
@@ -218,13 +281,28 @@ function buildSiteDocumentDefinition(siteReport: SiteAnalysisResult): PdfMakeDoc
     if (page.pageSpeed) {
       const ps = page.pageSpeed;
       const psRows: (string | number | object)[][] = [];
-      if (ps.coreWebVitals?.lcp) psRows.push(['LCP', ps.coreWebVitals.lcp.displayValue]);
-      if (ps.coreWebVitals?.cls) psRows.push(['CLS', ps.coreWebVitals.cls.displayValue]);
-      if (ps.lighthouseScores?.performance != null) psRows.push(['Lighthouse Performance', `${ps.lighthouseScores.performance}/100`]);
+      if (ps.coreWebVitals?.lcp) psRows.push(['LCP (lab)', ps.coreWebVitals.lcp.displayValue]);
+      if (ps.coreWebVitals?.cls) psRows.push(['CLS (lab)', ps.coreWebVitals.cls.displayValue]);
+      if (ps.lighthouseScores?.performance != null) psRows.push(['Lighthouse Perf', `${ps.lighthouseScores.performance}/100`]);
       if (psRows.length) {
-        content.push({ text: 'PageSpeed', fontSize: 9, bold: true, color: COLORS.textMuted, margin: [0, 8, 0, 4] });
+        content.push({ text: 'PageSpeed (lab)', fontSize: 9, bold: true, color: COLORS.textMuted, margin: [0, 8, 0, 4] });
         content.push({
           table: { widths: [140, 'auto'], body: psRows },
+          layout: 'noBorders',
+          margin: [0, 0, 0, 8],
+        });
+      }
+    }
+    // CrUX (real-user) for this page when available
+    if (page.crux?.coreWebVitals) {
+      const cwv = page.crux.coreWebVitals;
+      const cruxRows: (string | number | object)[][] = [];
+      if (cwv.lcp) cruxRows.push(['LCP (real)', cwv.lcp.displayValue]);
+      if (cwv.cls) cruxRows.push(['CLS (real)', cwv.cls.displayValue]);
+      if (cruxRows.length) {
+        content.push({ text: 'CrUX (real users)', fontSize: 9, bold: true, color: COLORS.textMuted, margin: [0, 4, 0, 4] });
+        content.push({
+          table: { widths: [140, 'auto'], body: cruxRows },
           layout: 'noBorders',
           margin: [0, 0, 0, 12],
         });
@@ -287,7 +365,7 @@ function buildDocumentDefinition(report: SEOReport): PdfMakeDocDef {
       widths: [120, '*'],
       body: [
         [{ text: 'Analyzed URL:', bold: true }, { text: report.url }],
-        [{ text: 'Analysis Date:', bold: true }, { text: new Date(report.analyzedAt).toLocaleString() }],
+        [{ text: 'Analysis Date:', bold: true }, { text: new Date(report.analyzedAt).toLocaleString('en-US', { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'medium' }) + ' UTC' }],
         [{ text: 'Depth:', bold: true }, { text: String(report.depth) }],
       ],
     },
@@ -334,6 +412,25 @@ function buildDocumentDefinition(report: SEOReport): PdfMakeDocDef {
     ],
     margin: [0, 0, 0, 16],
   });
+
+  // ---- SSL & Mixed Content (report-only) ----
+  if (report.sslSecurity) {
+    content.push({ text: 'SSL & Mixed Content', style: 'sectionHeader' });
+    const ssl = report.sslSecurity;
+    const sslValidText = ssl.sslValid ? { text: 'SSL Certificate: Valid', color: COLORS.pass } : { text: `SSL Certificate: Invalid (${ssl.sslError || 'unknown'})`, color: COLORS.fail };
+    const mixedText = ssl.mixedContent.hasMixedContent
+      ? { text: `Mixed Content: ${ssl.mixedContent.insecureUrls.length} insecure resource(s)`, color: COLORS.fail }
+      : { text: 'Mixed Content: None detected', color: COLORS.pass };
+    content.push({ text: [sslValidText, { text: '  •  ' }, mixedText], margin: [0, 0, 0, 8] });
+    if (ssl.mixedContent.hasMixedContent && ssl.mixedContent.insecureUrls.length > 0) {
+      content.push({
+        ul: ssl.mixedContent.insecureUrls.slice(0, 8).map((u) => ({ text: u, fontSize: 8 })),
+        margin: [0, 0, 0, 16],
+      });
+    } else {
+      content.push({ text: ' ', margin: [0, 0, 0, 8] });
+    }
+  }
 
   // ---- Page metadata ----
   if (report.metadata) {
@@ -413,6 +510,66 @@ function buildDocumentDefinition(report: SEOReport): PdfMakeDocDef {
         margin: [0, 0, 0, 16],
       });
     }
+  }
+
+  // ---- Real User Metrics (CrUX) ----
+  if (report.crux?.coreWebVitals) {
+    content.push({ text: 'Real User Metrics (Chrome UX Report)', style: 'sectionHeader' });
+    if (report.crux.origin && !report.crux.url) {
+      content.push({
+        text: 'Site-level data (this page had no CrUX data; origin aggregate is shown).',
+        fontSize: 9,
+        color: COLORS.textMuted,
+        italics: true,
+        margin: [0, 0, 0, 8],
+      });
+    }
+    const cwv = report.crux.coreWebVitals;
+    const cwvEntries: [string, { value: number; rating: string; displayValue: string } | null][] = [
+      ['LCP', cwv.lcp],
+      ['CLS', cwv.cls],
+      ['FCP', cwv.fcp],
+      ['INP', cwv.inp],
+      ['TTFB', cwv.ttfb],
+    ];
+    const cwvBody = cwvEntries
+      .filter(([, m]) => m != null)
+      .map(([label, metric]) => {
+        const ratingColor =
+          metric!.rating === 'good' ? COLORS.pass : metric!.rating === 'needs-improvement' ? COLORS.warning : COLORS.fail;
+        return [{ text: label }, { text: metric!.displayValue, color: ratingColor }];
+      });
+    if (cwvBody.length) {
+      content.push({
+        table: { widths: ['*', 'auto'], body: cwvBody },
+        layout: 'noBorders',
+        margin: [0, 0, 0, 8],
+      });
+      content.push({
+        text: `Data period: ${formatCruxCollectionPeriod(report.crux.collectionPeriod)}`,
+        fontSize: 9,
+        color: COLORS.textMuted,
+        margin: [0, 0, 0, 16],
+      });
+    }
+  } else {
+    // CrUX Data Availability: show when CrUX data is not available (PDF only)
+    content.push({ text: 'CrUX Data Availability', style: 'sectionHeader' });
+    content.push({
+      text: ['Status: ', { text: 'Not available', color: COLORS.warning, bold: true }],
+      margin: [0, 0, 0, 4],
+    });
+    content.push({
+      text: ['Why: ', report.cruxUnavailableReason ?? 'CrUX data was not fetched for this analysis.'],
+      fontSize: 9,
+      margin: [0, 0, 0, 4],
+    });
+    content.push({
+      text: ['When available: ', report.cruxWhenAvailable ?? 'Configure CRUX_API_KEY and use depth=advanced or all.'],
+      fontSize: 9,
+      color: COLORS.textMuted,
+      margin: [0, 0, 0, 16],
+    });
   }
 
   // ---- Recommendations ----

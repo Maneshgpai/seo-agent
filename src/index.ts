@@ -20,7 +20,9 @@ import { analyzePageSpeed } from './analyzers/pagespeed.js';
 import { analyzeSite } from './site-analyzer.js';
 import { generateReport, formatReportAsText, formatReportAsJson, generateSummaryLine } from './reporter.js';
 import { formatSiteReportAsText, formatSiteReportAsJson, generateSiteSummaryLine } from './site-reporter.js';
-import { fetchPageSpeedData } from './pagespeed.js';
+import { fetchPageSpeedData, fetchPageSpeedForSite } from './pagespeed.js';
+import { fetchCruxForUrlWithOriginFallback, fetchCruxForSite } from './crux.js';
+import { verifySslAndMixedContent } from './ssl-security.js';
 import type { AnalysisDepth, SEOIssue, SEOReport, PageSpeedData } from './types.js';
 import type { SiteAnalysisResult } from './site-analyzer.js';
 
@@ -78,41 +80,68 @@ export async function analyzeSEO(
   // Advanced analysis
   if (depth === 'advanced' || depth === 'all') {
     console.log('⏳ Running advanced SEO checks...');
-    
-    // Fetch robots.txt and sitemap for advanced checks
-    console.log('  ⏳ Fetching robots.txt...');
-    const robotsTxt = await fetchRobotsTxt(url);
-    console.log('  ⏳ Fetching sitemap.xml...');
-    const sitemap = await fetchSitemap(url);
-    
+    // Fetch robots.txt and sitemap in parallel for advanced checks
+    const [robotsTxt, sitemap] = await Promise.all([fetchRobotsTxt(url), fetchSitemap(url)]);
     issues.push(...analyzeAdvancedSEO(crawlResult, robotsTxt, sitemap));
     console.log('✓ Advanced checks complete');
   }
 
-  // PageSpeed Insights analysis (requires API key)
+  // PageSpeed Insights and CrUX (require API keys) — run in parallel when both keys set
   let pageSpeedData: PageSpeedData | null = null;
+  let cruxData: import('./types.js').CruxData | null = null;
   const pageSpeedApiKey = process.env.GOOGLE_PAGESPEED_API_KEY;
+  const cruxApiKey = process.env.CRUX_API_KEY;
 
   if (depth === 'advanced' || depth === 'all') {
-    if (!pageSpeedApiKey) {
-      console.log('⚠ PageSpeed checks skipped: GOOGLE_PAGESPEED_API_KEY not set');
-    } else {
-      console.log('⏳ Running PageSpeed Insights analysis...');
-      console.log('  (This may take up to 60 seconds)');
-      pageSpeedData = await fetchPageSpeedData(url, pageSpeedApiKey);
-      
+    const runPageSpeed = !!pageSpeedApiKey;
+    const runCrux = !!cruxApiKey;
+    if (!runPageSpeed && !runCrux) {
+      console.log('⚠ PageSpeed and CrUX skipped: no API keys configured');
+    } else if (runPageSpeed && runCrux) {
+      console.log('⏳ Running PageSpeed Insights and CrUX in parallel...');
+      const [psiResult, cruxResult] = await Promise.all([
+        fetchPageSpeedData(url, pageSpeedApiKey!),
+        fetchCruxForUrlWithOriginFallback(url, cruxApiKey!),
+      ]);
+      pageSpeedData = psiResult ?? null;
+      cruxData = cruxResult ?? null;
       if (pageSpeedData) {
         issues.push(...analyzePageSpeed(pageSpeedData));
         console.log('✓ PageSpeed analysis complete');
-      } else {
-        console.log('⚠ PageSpeed analysis failed - continuing without it');
-      }
+      } else console.log('⚠ PageSpeed analysis failed - continuing without it');
+      if (cruxData) console.log('✓ CrUX data loaded');
+      else console.log('⚠ No CrUX data for this URL or origin');
+    } else if (runPageSpeed) {
+      console.log('⏳ Running PageSpeed Insights analysis...');
+      pageSpeedData = await fetchPageSpeedData(url, pageSpeedApiKey);
+      if (pageSpeedData) {
+        issues.push(...analyzePageSpeed(pageSpeedData));
+        console.log('✓ PageSpeed analysis complete');
+      } else console.log('⚠ PageSpeed analysis failed - continuing without it');
+    } else {
+      console.log('⏳ Fetching Chrome UX Report (real-user metrics)...');
+      cruxData = await fetchCruxForUrlWithOriginFallback(url, cruxApiKey!);
+      if (cruxData) console.log('✓ CrUX data loaded');
+      else console.log('⚠ No CrUX data for this URL or origin');
     }
   }
 
-  // Generate report
+  // Generate report (SSL/mixed content checked silently, results in report only)
   console.log('⏳ Generating report...');
-  const report = generateReport(url, depth, issues, crawlResult.metadata, pageSpeedData);
+  const sslSecurity = await verifySslAndMixedContent(url, crawlResult.html);
+  const report = generateReport(url, depth, issues, crawlResult.metadata, pageSpeedData, cruxData, sslSecurity);
+  if (!report.crux?.coreWebVitals) {
+    if (depth !== 'advanced' && depth !== 'all') {
+      report.cruxUnavailableReason = 'CrUX is only fetched for advanced or all-depth analysis.';
+      report.cruxWhenAvailable = 'Use depth=advanced or depth=all.';
+    } else if (!cruxApiKey) {
+      report.cruxUnavailableReason = 'CRUX_API_KEY is not configured. CrUX is only fetched when the API key is set in the environment.';
+      report.cruxWhenAvailable = 'Set CRUX_API_KEY in your environment.';
+    } else {
+      report.cruxUnavailableReason = 'No CrUX data for this URL or origin. Common causes: insufficient traffic (CrUX requires Chrome users over 28 days), new site, or low-traffic page.';
+      report.cruxWhenAvailable = 'CrUX data typically appears 28+ days after a site has sufficient traffic from Chrome users.';
+    }
+  }
   console.log('✓ Report generated\n');
 
   return report;
@@ -163,9 +192,57 @@ export async function analyzeSiteWide(
     throw new Error('No pages could be crawled. Check the URL and try again.');
   }
 
+  // Optional PageSpeed and CrUX for first N pages when keys are set (advanced depth) — run in parallel
+  let pageSpeedByUrl: Map<string, PageSpeedData> | undefined;
+  let cruxOrigin: import('./types.js').CruxData | null = null;
+  let cruxByUrl: Map<string, import('./types.js').CruxData> | undefined;
+  const pageSpeedApiKey = process.env.GOOGLE_PAGESPEED_API_KEY;
+  const cruxApiKey = process.env.CRUX_API_KEY;
+  const maxPagesForApis = 10;
+
+  if (depth === 'advanced' || depth === 'all') {
+    const runPageSpeed = !!pageSpeedApiKey;
+    const runCrux = !!cruxApiKey;
+    if (runPageSpeed && runCrux) {
+      console.log('⏳ Fetching PageSpeed and CrUX in parallel for first', maxPagesForApis, 'pages...');
+      const origin = new URL(crawlResult.baseUrl).origin;
+      const [psiMap, cruxResult] = await Promise.all([
+        fetchPageSpeedForSite(crawlResult.pages, pageSpeedApiKey, maxPagesForApis),
+        fetchCruxForSite(origin, crawlResult.pages, cruxApiKey, maxPagesForApis),
+      ]);
+      pageSpeedByUrl = psiMap;
+      cruxOrigin = cruxResult.originData;
+      cruxByUrl = cruxResult.byUrl;
+      console.log(`✓ PageSpeed: ${psiMap.size} pages | CrUX: origin + ${cruxResult.byUrl.size} pages`);
+    } else if (runPageSpeed) {
+      console.log('⏳ Fetching PageSpeed for first', maxPagesForApis, 'pages...');
+      pageSpeedByUrl = await fetchPageSpeedForSite(crawlResult.pages, pageSpeedApiKey, maxPagesForApis);
+      console.log(`✓ PageSpeed: ${pageSpeedByUrl.size} pages`);
+    } else if (runCrux) {
+      console.log('⏳ Fetching Chrome UX Report (origin + first', maxPagesForApis, 'pages)...');
+      const origin = new URL(crawlResult.baseUrl).origin;
+      const result = await fetchCruxForSite(origin, crawlResult.pages, cruxApiKey, maxPagesForApis);
+      cruxOrigin = result.originData;
+      cruxByUrl = result.byUrl;
+      console.log(`✓ CrUX: origin + ${result.byUrl.size} pages`);
+    }
+  }
+
   // Analyze the site
   console.log('\n⏳ Analyzing SEO across all pages...');
-  const report = analyzeSite(crawlResult, depth);
+  const report = await analyzeSite(crawlResult, depth, pageSpeedByUrl, cruxOrigin ?? undefined, cruxByUrl);
+  if (!report.cruxOrigin?.coreWebVitals) {
+    if (depth !== 'advanced' && depth !== 'all') {
+      report.cruxUnavailableReason = 'CrUX is only fetched for advanced or all-depth analysis.';
+      report.cruxWhenAvailable = 'Use depth=advanced or depth=all.';
+    } else if (!cruxApiKey) {
+      report.cruxUnavailableReason = 'CRUX_API_KEY is not configured. CrUX is only fetched when the API key is set in the environment.';
+      report.cruxWhenAvailable = 'Set CRUX_API_KEY in your environment.';
+    } else {
+      report.cruxUnavailableReason = 'No CrUX data for this origin. Common causes: insufficient traffic (CrUX requires Chrome users over 28 days), new site, or low-traffic website.';
+      report.cruxWhenAvailable = 'CrUX data typically appears 28+ days after a site has sufficient traffic from Chrome users.';
+    }
+  }
   console.log('✓ Analysis complete\n');
 
   return report;

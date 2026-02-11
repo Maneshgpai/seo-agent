@@ -8,9 +8,10 @@
 
 - **Single page analysis** — Analyze one URL for SEO issues
 - **Full site analysis** — Crawl your whole website and get a site-wide report
-- **Core Web Vitals** — LCP, CLS, INP, TTFB (the metrics Google cares about)
+- **Core Web Vitals** — LCP, CLS, INP, TTFB (lab data from PageSpeed; real-user data from CrUX when enabled)
 - **Lighthouse scores** — Performance, Accessibility, Best Practices, SEO
-- **Downloadable reports** — JSON or text, with clear next steps
+- **Real user metrics (CrUX)** — Optional Chrome UX Report for field CWV (free API)
+- **Downloadable reports** — JSON, text, or PDF with clear next steps
 
 ## What It Checks
 
@@ -73,6 +74,7 @@ npx tsx src/index.ts https://example.com --site --max-pages=100
 - **Puppeteer** — Page loading and rendering
 - **Cheerio** — HTML parsing
 - **Google PageSpeed API** — Core Web Vitals and Lighthouse (optional)
+- **Chrome UX Report (CrUX) API** — Real-user CWV (optional, free)
 
 ---
 
@@ -86,6 +88,18 @@ For Core Web Vitals and Lighthouse scores:
 4. Put the key in `.env`: `GOOGLE_PAGESPEED_API_KEY=your_key`
 
 Without this key, the app still runs; PageSpeed checks are skipped and a short message is shown.
+
+---
+
+## Optional: Chrome UX Report (CrUX) API
+
+For real-user Core Web Vitals (field data) alongside lab data:
+
+1. In the same (or a new) Google Cloud project, enable **Chrome UX Report API**.
+2. Use the same API key or create one with CrUX enabled; add to `.env`: `CRUX_API_KEY=your_key`
+3. Quota is free (150 queries/minute); no paid tier.
+
+Reports then include a “Real User Metrics (Chrome UX Report)” section with LCP, CLS, FCP, INP, TTFB (75th percentile and rating). In site mode, origin-level CrUX plus per-URL data for the first N pages are included.
 
 ---
 

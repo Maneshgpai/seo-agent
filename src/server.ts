@@ -20,7 +20,9 @@ import { analyzeIntermediateSEO } from './analyzers/intermediate.js';
 import { analyzeAdvancedSEO } from './analyzers/advanced.js';
 import { analyzePageSpeed } from './analyzers/pagespeed.js';
 import { generateReport, formatReportAsText } from './reporter.js';
-import { fetchPageSpeedData } from './pagespeed.js';
+import { fetchPageSpeedData, fetchPageSpeedForSite } from './pagespeed.js';
+import { fetchCruxForUrlWithOriginFallback, fetchCruxForSite } from './crux.js';
+import { verifySslAndMixedContent } from './ssl-security.js';
 import type { AnalysisDepth, SEOIssue, SEOReport, PageSpeedData } from './types.js';
 import { verifyJWT } from './jwt-middleware.js';
 import { buildPdfReport, buildPdfReportFromSite } from './pdf-report.js';
@@ -41,7 +43,7 @@ const RECAPTCHA_SECRET_KEY = process.env.RECAPTCHA_SECRET_KEY || '';
 const RECAPTCHA_SITE_KEY = process.env.RECAPTCHA_SITE_KEY || '';
 const ENABLE_RECAPTCHA = process.env.ENABLE_RECAPTCHA === 'true';
 
-/** Max pages to run PageSpeed for in site mode (avoids timeout and API rate limits) */
+/** Max pages to run PageSpeed/CrUX for in site mode (avoids timeout and API rate limits) */
 const PAGESPEED_SITE_MODE_MAX_PAGES = 10;
 
 /** Frontend config injected into HTML at runtime (no keys in source code) */
@@ -214,25 +216,62 @@ app.get('/api/analyze/stream', verifyJWT, async (req: Request, res: Response) =>
       sendEvent('step', { id: 'advanced', status: 'running', title: 'Running advanced checks' });
       sendEvent('step', { id: 'advanced', status: 'done', title: 'Advanced checks complete' });
 
-      // PageSpeed in site mode: run for first N pages when API key is set
+      // PageSpeed and CrUX in site mode: run in parallel for first N pages when keys set
       let pageSpeedByUrl: Map<string, PageSpeedData> | undefined;
+      let cruxOrigin: import('./types.js').CruxData | null = null;
+      let cruxByUrl: Map<string, import('./types.js').CruxData> | undefined;
       const pageSpeedApiKey = process.env.GOOGLE_PAGESPEED_API_KEY;
-      if (pageSpeedApiKey && (depth === 'advanced' || depth === 'all')) {
-        sendEvent('step', { id: 'pagespeed', status: 'running', title: 'Fetching PageSpeed Insights (site sample)' });
-        pageSpeedByUrl = await fetchPageSpeedForSite(
-          crawlResult.pages,
-          pageSpeedApiKey,
-          PAGESPEED_SITE_MODE_MAX_PAGES
-        );
-        sendEvent('step', { id: 'pagespeed', status: 'done', title: `PageSpeed complete (${pageSpeedByUrl.size} pages)` });
-      } else if (!pageSpeedApiKey) {
-        sendEvent('step', { id: 'pagespeed', status: 'skipped', title: 'PageSpeed: No API key configured' });
+      const cruxApiKey = process.env.CRUX_API_KEY;
+      if (depth === 'advanced' || depth === 'all') {
+        if (pageSpeedApiKey && cruxApiKey) {
+          sendEvent('step', { id: 'pagespeed', status: 'running', title: 'Fetching PageSpeed' });
+          sendEvent('step', { id: 'crux', status: 'running', title: 'Fetching CrUX' });
+          const origin = new URL(crawlResult.baseUrl).origin;
+          const [psiMap, cruxResult] = await Promise.all([
+            fetchPageSpeedForSite(crawlResult.pages, pageSpeedApiKey, PAGESPEED_SITE_MODE_MAX_PAGES),
+            fetchCruxForSite(origin, crawlResult.pages, cruxApiKey, PAGESPEED_SITE_MODE_MAX_PAGES),
+          ]);
+          pageSpeedByUrl = psiMap;
+          cruxOrigin = cruxResult.originData;
+          cruxByUrl = cruxResult.byUrl;
+          sendEvent('step', { id: 'pagespeed', status: 'done', title: `PageSpeed complete (${psiMap.size} pages)` });
+          sendEvent('step', { id: 'crux', status: 'done', title: `CrUX complete (origin + ${cruxResult.byUrl.size} pages)` });
+        } else if (pageSpeedApiKey) {
+          sendEvent('step', { id: 'pagespeed', status: 'running', title: 'Fetching PageSpeed Insights (site sample)' });
+          pageSpeedByUrl = await fetchPageSpeedForSite(crawlResult.pages, pageSpeedApiKey, PAGESPEED_SITE_MODE_MAX_PAGES);
+          sendEvent('step', { id: 'pagespeed', status: 'done', title: `PageSpeed complete (${pageSpeedByUrl.size} pages)` });
+          sendEvent('step', { id: 'crux', status: 'skipped', title: 'CrUX: No API key configured' });
+        } else if (cruxApiKey) {
+          sendEvent('step', { id: 'crux', status: 'running', title: 'Fetching Chrome UX Report (site)' });
+          const origin = new URL(crawlResult.baseUrl).origin;
+          const result = await fetchCruxForSite(origin, crawlResult.pages, cruxApiKey, PAGESPEED_SITE_MODE_MAX_PAGES);
+          cruxOrigin = result.originData;
+          cruxByUrl = result.byUrl;
+          sendEvent('step', { id: 'pagespeed', status: 'skipped', title: 'PageSpeed: No API key configured' });
+          sendEvent('step', { id: 'crux', status: 'done', title: `CrUX complete (origin + ${result.byUrl.size} pages)` });
+        } else {
+          sendEvent('step', { id: 'pagespeed', status: 'skipped', title: 'PageSpeed: No API key configured' });
+          sendEvent('step', { id: 'crux', status: 'skipped', title: 'CrUX: No API key configured' });
+        }
       } else {
         sendEvent('step', { id: 'pagespeed', status: 'skipped', title: 'PageSpeed: not run for basic/intermediate depth' });
+        sendEvent('step', { id: 'crux', status: 'skipped', title: 'CrUX: not run for basic/intermediate depth' });
       }
 
       sendEvent('step', { id: 'report', status: 'running', title: 'Generating report' });
-      const siteReport = analyzeSite(crawlResult, depth, pageSpeedByUrl);
+      const siteReport = await analyzeSite(crawlResult, depth, pageSpeedByUrl, cruxOrigin ?? undefined, cruxByUrl);
+      if (!siteReport.cruxOrigin?.coreWebVitals) {
+        if (depth !== 'advanced' && depth !== 'all') {
+          siteReport.cruxUnavailableReason = 'CrUX is only fetched for advanced or all-depth analysis.';
+          siteReport.cruxWhenAvailable = 'Use depth=advanced or depth=all.';
+        } else if (!cruxApiKey) {
+          siteReport.cruxUnavailableReason = 'CRUX_API_KEY is not configured. CrUX is only fetched when the API key is set in the environment.';
+          siteReport.cruxWhenAvailable = 'Set CRUX_API_KEY in your environment.';
+        } else {
+          siteReport.cruxUnavailableReason = 'No CrUX data for this origin. Common causes: insufficient traffic (CrUX requires Chrome users over 28 days), new site, or low-traffic website.';
+          siteReport.cruxWhenAvailable = 'CrUX data typically appears 28+ days after a site has sufficient traffic from Chrome users.';
+        }
+      }
       sendEvent('step', { id: 'report', status: 'done', title: 'Report ready' });
 
       sendEvent('complete', {
@@ -242,6 +281,7 @@ app.get('/api/analyze/stream', verifyJWT, async (req: Request, res: Response) =>
       });
     } else {
       // Single page
+      const cruxApiKeySingle = process.env.CRUX_API_KEY;
       sendEvent('step', { id: 'crawl', status: 'running', title: 'Loading page' });
       const timeout = parseInt(process.env.REQUEST_TIMEOUT || '30000');
       const userAgent = process.env.USER_AGENT;
@@ -262,30 +302,63 @@ app.get('/api/analyze/stream', verifyJWT, async (req: Request, res: Response) =>
         sendEvent('step', { id: 'intermediate', status: 'done', title: 'Intermediate checks complete' });
       }
       let pageSpeedData: PageSpeedData | null = null;
+      let reportCruxData: import('./types.js').CruxData | null = null;
       if (analysisDepth === 'advanced' || analysisDepth === 'all') {
         sendEvent('step', { id: 'advanced', status: 'running', title: 'Running advanced checks' });
-        const robotsTxt = await fetchRobotsTxt(url);
-        const sitemap = await fetchSitemap(url);
+        const [robotsTxt, sitemap] = await Promise.all([fetchRobotsTxt(url), fetchSitemap(url)]);
         issues.push(...analyzeAdvancedSEO(crawlResult, robotsTxt, sitemap));
         sendEvent('step', { id: 'advanced', status: 'done', title: 'Advanced checks complete' });
 
         const pageSpeedApiKey = process.env.GOOGLE_PAGESPEED_API_KEY;
-        if (pageSpeedApiKey) {
-          sendEvent('step', { id: 'pagespeed', status: 'running', title: 'Fetching PageSpeed Insights' });
-          pageSpeedData = await fetchPageSpeedData(url, pageSpeedApiKey);
+        const cruxApiKey = process.env.CRUX_API_KEY;
+        if (pageSpeedApiKey && cruxApiKey) {
+          sendEvent('step', { id: 'pagespeed', status: 'running', title: 'Fetching PageSpeed and CrUX in parallel' });
+          sendEvent('step', { id: 'crux', status: 'running', title: 'Fetching PageSpeed and CrUX in parallel' });
+          const [psiResult, cruxResult] = await Promise.all([
+            fetchPageSpeedData(url, pageSpeedApiKey),
+            fetchCruxForUrlWithOriginFallback(url, cruxApiKey),
+          ]);
+          pageSpeedData = psiResult ?? null;
+          reportCruxData = cruxResult ?? null;
           if (pageSpeedData) {
             issues.push(...analyzePageSpeed(pageSpeedData));
             sendEvent('step', { id: 'pagespeed', status: 'done', title: 'PageSpeed analysis complete' });
-          } else {
-            sendEvent('step', { id: 'pagespeed', status: 'warning', title: 'PageSpeed analysis skipped' });
-          }
+          } else sendEvent('step', { id: 'pagespeed', status: 'warning', title: 'PageSpeed analysis skipped' });
+          sendEvent('step', { id: 'crux', status: reportCruxData ? 'done' : 'warning', title: reportCruxData ? 'CrUX data loaded' : 'No CrUX data for this URL or origin' });
+        } else if (pageSpeedApiKey) {
+          sendEvent('step', { id: 'pagespeed', status: 'running', title: 'Fetching PageSpeed Insights' });
+          pageSpeedData = await fetchPageSpeedData(url, pageSpeedApiKey) ?? null;
+          if (pageSpeedData) {
+            issues.push(...analyzePageSpeed(pageSpeedData));
+            sendEvent('step', { id: 'pagespeed', status: 'done', title: 'PageSpeed analysis complete' });
+          } else sendEvent('step', { id: 'pagespeed', status: 'warning', title: 'PageSpeed analysis skipped' });
+          sendEvent('step', { id: 'crux', status: 'skipped', title: 'CrUX: No API key configured' });
+        } else if (cruxApiKey) {
+          sendEvent('step', { id: 'crux', status: 'running', title: 'Fetching Chrome UX Report' });
+          reportCruxData = await fetchCruxForUrlWithOriginFallback(url, cruxApiKey) ?? null;
+          sendEvent('step', { id: 'pagespeed', status: 'skipped', title: 'PageSpeed: No API key configured' });
+          sendEvent('step', { id: 'crux', status: reportCruxData ? 'done' : 'warning', title: reportCruxData ? 'CrUX data loaded' : 'No CrUX data for this URL or origin' });
         } else {
           sendEvent('step', { id: 'pagespeed', status: 'skipped', title: 'PageSpeed: No API key configured' });
+          sendEvent('step', { id: 'crux', status: 'skipped', title: 'CrUX: No API key configured' });
         }
       }
 
       sendEvent('step', { id: 'report', status: 'running', title: 'Generating report' });
-      const report = generateReport(url, analysisDepth, issues, crawlResult.metadata, pageSpeedData);
+      const sslSecurity = await verifySslAndMixedContent(url, crawlResult.html);
+      const report = generateReport(url, analysisDepth, issues, crawlResult.metadata, pageSpeedData, reportCruxData, sslSecurity);
+      if (!report.crux?.coreWebVitals) {
+        if (analysisDepth !== 'advanced' && analysisDepth !== 'all') {
+          report.cruxUnavailableReason = 'CrUX is only fetched for advanced or all-depth analysis.';
+          report.cruxWhenAvailable = 'Use depth=advanced or depth=all.';
+        } else if (!cruxApiKeySingle) {
+          report.cruxUnavailableReason = 'CRUX_API_KEY is not configured. CrUX is only fetched when the API key is set in the environment.';
+          report.cruxWhenAvailable = 'Set CRUX_API_KEY in your environment.';
+        } else {
+          report.cruxUnavailableReason = 'No CrUX data for this URL or origin. Common causes: insufficient traffic (CrUX requires Chrome users over 28 days), new site, or low-traffic page.';
+          report.cruxWhenAvailable = 'CrUX data typically appears 28+ days after a site has sufficient traffic from Chrome users.';
+        }
+      }
       sendEvent('step', { id: 'report', status: 'done', title: 'Report ready' });
 
       sendEvent('complete', {
@@ -303,70 +376,71 @@ app.get('/api/analyze/stream', verifyJWT, async (req: Request, res: Response) =>
 });
 
 /**
- * Perform the SEO analysis
+ * Perform the SEO analysis. PageSpeed and CrUX run in parallel when both keys are set.
  */
 async function performAnalysis(url: string, depth: AnalysisDepth): Promise<SEOReport> {
   const timeout = parseInt(process.env.REQUEST_TIMEOUT || '30000');
   const userAgent = process.env.USER_AGENT;
+  const cruxApiKey = process.env.CRUX_API_KEY;
 
-  // Crawl the page
   const crawlResult = await crawlPage(url, { timeout, userAgent });
-
-  // Collect issues based on depth
   const issues: SEOIssue[] = [];
 
-  // Basic analysis
   if (depth === 'basic' || depth === 'all') {
     issues.push(...analyzeBasicSEO(crawlResult));
   }
 
-  // Intermediate analysis
   if (depth === 'intermediate' || depth === 'all') {
     issues.push(...analyzeIntermediateSEO(crawlResult));
   }
 
-  // Advanced analysis
   let pageSpeedData: PageSpeedData | null = null;
+  let cruxData: import('./types.js').CruxData | null = null;
   if (depth === 'advanced' || depth === 'all') {
-    const robotsTxt = await fetchRobotsTxt(url);
-    const sitemap = await fetchSitemap(url);
+    const [robotsTxt, sitemap] = await Promise.all([fetchRobotsTxt(url), fetchSitemap(url)]);
     issues.push(...analyzeAdvancedSEO(crawlResult, robotsTxt, sitemap));
 
-    // PageSpeed analysis if API key is available
     const pageSpeedApiKey = process.env.GOOGLE_PAGESPEED_API_KEY;
-    if (pageSpeedApiKey) {
-      pageSpeedData = await fetchPageSpeedData(url, pageSpeedApiKey);
-      if (pageSpeedData) {
-        issues.push(...analyzePageSpeed(pageSpeedData));
-      }
+    if (pageSpeedApiKey && cruxApiKey) {
+      console.log(`[analyze] Fetching PageSpeed + CrUX in parallel for ${url}`);
+      const [psiResult, cruxResult] = await Promise.all([
+        fetchPageSpeedData(url, pageSpeedApiKey),
+        fetchCruxForUrlWithOriginFallback(url, cruxApiKey),
+      ]);
+      pageSpeedData = psiResult ?? null;
+      cruxData = cruxResult ?? null;
+    } else if (pageSpeedApiKey) {
+      pageSpeedData = await fetchPageSpeedData(url, pageSpeedApiKey) ?? null;
+    } else if (cruxApiKey) {
+      cruxData = await fetchCruxForUrlWithOriginFallback(url, cruxApiKey) ?? null;
+    }
+
+    if (pageSpeedData) {
+      issues.push(...analyzePageSpeed(pageSpeedData));
     }
   }
 
-  // Generate report
-  return generateReport(url, depth, issues, crawlResult.metadata, pageSpeedData);
-}
-
-/**
- * Fetches PageSpeed data for the first N crawled pages (site mode).
- * Returns a map of page URL -> PageSpeedData for use in analyzeSite.
- */
-async function fetchPageSpeedForSite(
-  pages: { url: string }[],
-  apiKey: string,
-  maxPages: number
-): Promise<Map<string, PageSpeedData>> {
-  const map = new Map<string, PageSpeedData>();
-  const toFetch = pages.slice(0, maxPages);
-  for (const page of toFetch) {
-    const data = await fetchPageSpeedData(page.url, apiKey);
-    if (data) map.set(page.url, data);
+  const sslSecurity = await verifySslAndMixedContent(url, crawlResult.html);
+  const report = generateReport(url, depth, issues, crawlResult.metadata, pageSpeedData, cruxData, sslSecurity);
+  // Set CrUX availability info for PDF when CrUX data is missing
+  if (!report.crux?.coreWebVitals) {
+    if (depth !== 'advanced' && depth !== 'all') {
+      report.cruxUnavailableReason = 'CrUX is only fetched for advanced or all-depth analysis.';
+      report.cruxWhenAvailable = 'Use depth=advanced or depth=all.';
+    } else if (!cruxApiKey) {
+      report.cruxUnavailableReason = 'CRUX_API_KEY is not configured. CrUX is only fetched when the API key is set in the environment.';
+      report.cruxWhenAvailable = 'Set CRUX_API_KEY in your environment.';
+    } else {
+      report.cruxUnavailableReason = 'No CrUX data for this URL or origin. Common causes: insufficient traffic (CrUX requires Chrome users over 28 days), new site, or low-traffic page.';
+      report.cruxWhenAvailable = 'CrUX data typically appears 28+ days after a site has sufficient traffic from Chrome users.';
+    }
   }
-  return map;
+  return report;
 }
 
 /**
  * Perform site-wide SEO analysis: crawl multiple pages then analyze each.
- * When GOOGLE_PAGESPEED_API_KEY is set, runs PageSpeed for the first N pages and merges results.
+ * PageSpeed and CrUX run in parallel when both keys are set.
  */
 async function performSiteAnalysis(url: string, depth: AnalysisDepth, maxPages: number): Promise<SiteAnalysisResult> {
   const timeout = parseInt(process.env.REQUEST_TIMEOUT || '30000');
@@ -385,16 +459,46 @@ async function performSiteAnalysis(url: string, depth: AnalysisDepth, maxPages: 
   }
 
   let pageSpeedByUrl: Map<string, PageSpeedData> | undefined;
+  let cruxOrigin: import('./types.js').CruxData | null = null;
+  let cruxByUrl: Map<string, import('./types.js').CruxData> | undefined;
   const pageSpeedApiKey = process.env.GOOGLE_PAGESPEED_API_KEY;
-  if (pageSpeedApiKey && (depth === 'advanced' || depth === 'all')) {
-    pageSpeedByUrl = await fetchPageSpeedForSite(
-      crawlResult.pages,
-      pageSpeedApiKey,
-      PAGESPEED_SITE_MODE_MAX_PAGES
-    );
+  const cruxApiKey = process.env.CRUX_API_KEY;
+
+  if ((depth === 'advanced' || depth === 'all') && (pageSpeedApiKey || cruxApiKey)) {
+    const origin = new URL(crawlResult.baseUrl).origin;
+    if (pageSpeedApiKey && cruxApiKey) {
+      console.log(`[site] Fetching PageSpeed + CrUX in parallel for first ${PAGESPEED_SITE_MODE_MAX_PAGES} pages`);
+      const [psiMap, cruxResult] = await Promise.all([
+        fetchPageSpeedForSite(crawlResult.pages, pageSpeedApiKey, PAGESPEED_SITE_MODE_MAX_PAGES),
+        fetchCruxForSite(origin, crawlResult.pages, cruxApiKey, PAGESPEED_SITE_MODE_MAX_PAGES),
+      ]);
+      pageSpeedByUrl = psiMap;
+      cruxOrigin = cruxResult.originData;
+      cruxByUrl = cruxResult.byUrl;
+    } else if (pageSpeedApiKey) {
+      pageSpeedByUrl = await fetchPageSpeedForSite(crawlResult.pages, pageSpeedApiKey, PAGESPEED_SITE_MODE_MAX_PAGES);
+    } else {
+      const result = await fetchCruxForSite(origin, crawlResult.pages, cruxApiKey!, PAGESPEED_SITE_MODE_MAX_PAGES);
+      cruxOrigin = result.originData;
+      cruxByUrl = result.byUrl;
+    }
   }
 
-  return analyzeSite(crawlResult, depth, pageSpeedByUrl);
+  const siteReport = await analyzeSite(crawlResult, depth, pageSpeedByUrl, cruxOrigin ?? undefined, cruxByUrl);
+  // Set CrUX availability info for PDF when CrUX data is missing
+  if (!siteReport.cruxOrigin?.coreWebVitals) {
+    if (depth !== 'advanced' && depth !== 'all') {
+      siteReport.cruxUnavailableReason = 'CrUX is only fetched for advanced or all-depth analysis.';
+      siteReport.cruxWhenAvailable = 'Use depth=advanced or depth=all.';
+    } else if (!cruxApiKey) {
+      siteReport.cruxUnavailableReason = 'CRUX_API_KEY is not configured. CrUX is only fetched when the API key is set in the environment.';
+      siteReport.cruxWhenAvailable = 'Set CRUX_API_KEY in your environment.';
+    } else {
+      siteReport.cruxUnavailableReason = 'No CrUX data for this origin. Common causes: insufficient traffic (CrUX requires Chrome users over 28 days), new site, or low-traffic website.';
+      siteReport.cruxWhenAvailable = 'CrUX data typically appears 28+ days after a site has sufficient traffic from Chrome users.';
+    }
+  }
+  return siteReport;
 }
 
 /**
@@ -489,18 +593,31 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 
 // Start server
 app.listen(PORT, () => {
+  const boxWidth = 65;
+  const recaptchaStatus = ENABLE_RECAPTCHA ? 'Enabled' : 'Disabled';
+  const pagespeedStatus = process.env.GOOGLE_PAGESPEED_API_KEY ? 'Configured' : 'Not configured';
+  const cruxStatus = process.env.CRUX_API_KEY ? 'Configured' : 'Not configured';
+  
+  // Helper function to format a line with proper padding
+  const formatLine = (label: string, value: string) => {
+    const content = `  ${label}${value}`;
+    const padding = ' '.repeat(boxWidth - 2 - content.length);
+    return `║${content}${padding}║`;
+  };
+  
   console.log(`
-╔═══════════════════════════════════════════════════════════════╗
-║                    SEO Agent Server                           ║
-╠═══════════════════════════════════════════════════════════════╣
-║  Server running on port ${PORT}                                  ║
-║  Frontend: http://localhost:${PORT}                              ║
-║  API:      http://localhost:${PORT}/api/analyze                  ║
-║  Health:   http://localhost:${PORT}/health                       ║
-╠═══════════════════════════════════════════════════════════════╣
-║  reCAPTCHA: ${ENABLE_RECAPTCHA ? 'Enabled' : 'Disabled'}                                        ║
-║  PageSpeed: ${process.env.GOOGLE_PAGESPEED_API_KEY ? 'Configured' : 'Not configured'}                                     ║
-╚═══════════════════════════════════════════════════════════════╝
+╔${'═'.repeat(boxWidth - 2)}╗
+║${' '.repeat(Math.floor((boxWidth - 2 - 24) / 2))}SEO Agent Server${' '.repeat(Math.ceil((boxWidth - 2 - 24) / 2))}║
+╠${'═'.repeat(boxWidth - 2)}╣
+${formatLine('Server running on port ', PORT.toString())}
+${formatLine('Frontend: http://localhost:', PORT.toString())}
+${formatLine('API:      http://localhost:', `${PORT}/api/analyze`)}
+${formatLine('Health:   http://localhost:', `${PORT}/health`)}
+╠${'═'.repeat(boxWidth - 2)}╣
+${formatLine('reCAPTCHA: ', recaptchaStatus)}
+${formatLine('Google PageSpeed: ', pagespeedStatus)}
+${formatLine('Google CrUX: ', cruxStatus)}
+╚${'═'.repeat(boxWidth - 2)}╝
   `);
 });
 

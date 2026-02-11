@@ -3,7 +3,8 @@
  * Generates formatted reports with scores, findings, and recommendations
  */
 
-import type { SEOIssue, SEOReport, AnalysisDepth, PageMetadata, ScoreBreakdown, PageSpeedData } from './types.js';
+import type { SEOIssue, SEOReport, AnalysisDepth, PageMetadata, ScoreBreakdown, PageSpeedData, CruxData, SslSecurityCheck } from './types.js';
+import { formatCruxCollectionPeriod } from './crux.js';
 
 /**
  * Generates a complete SEO report from analysis results
@@ -13,7 +14,9 @@ export function generateReport(
   depth: AnalysisDepth,
   issues: SEOIssue[],
   metadata: PageMetadata,
-  pageSpeedData?: PageSpeedData | null
+  pageSpeedData?: PageSpeedData | null,
+  cruxData?: CruxData | null,
+  sslSecurity?: SslSecurityCheck | null
 ): SEOReport {
   const scores = calculateScores(issues);
   const summary = calculateSummary(issues);
@@ -29,6 +32,8 @@ export function generateReport(
     metadata,
     recommendations,
     pageSpeed: pageSpeedData || undefined,
+    crux: cruxData || undefined,
+    sslSecurity: sslSecurity || undefined,
   };
 }
 
@@ -144,6 +149,23 @@ export function formatReportAsText(report: SEOReport): string {
   lines.push(`  ⚠ Warnings:   ${report.summary.warnings}`);
   lines.push('');
 
+  // SSL & Mixed Content (report-only; never logged)
+  if (report.sslSecurity) {
+    lines.push('─'.repeat(70));
+    lines.push('                    SSL & MIXED CONTENT');
+    lines.push('─'.repeat(70));
+    lines.push('');
+    lines.push(`  SSL Certificate:  ${report.sslSecurity.sslValid ? '✓ Valid' : `✗ Invalid (${report.sslSecurity.sslError || 'unknown'})`}`);
+    lines.push(`  Mixed Content:    ${report.sslSecurity.mixedContent.hasMixedContent ? `✗ ${report.sslSecurity.mixedContent.insecureUrls.length} insecure resource(s) loaded` : '✓ None detected'}`);
+    if (report.sslSecurity.mixedContent.hasMixedContent && report.sslSecurity.mixedContent.insecureUrls.length > 0) {
+      report.sslSecurity.mixedContent.insecureUrls.slice(0, 10).forEach((u) => lines.push(`    - ${truncate(u, 60)}`));
+      if (report.sslSecurity.mixedContent.insecureUrls.length > 10) {
+        lines.push(`    ... and ${report.sslSecurity.mixedContent.insecureUrls.length - 10} more`);
+      }
+    }
+    lines.push('');
+  }
+
   // PageSpeed Insights sections (if available)
   if (report.pageSpeed) {
     // Core Web Vitals
@@ -171,15 +193,37 @@ export function formatReportAsText(report: SEOReport): string {
     lines.push('');
     lines.push('  Legend: ✓ Good  ⚠ Needs Improvement  ✗ Poor');
     lines.push('');
+  }
 
-    // Lighthouse Scores
+  // Real User Metrics (CrUX) — same CWV display pattern as lab data
+  if (report.crux?.coreWebVitals) {
+    lines.push('─'.repeat(70));
+    lines.push('                 REAL USER METRICS (Chrome UX Report)');
+    lines.push('─'.repeat(70));
+    lines.push('');
+    if (report.crux.origin && !report.crux.url) {
+      lines.push('  (Site-level data; this page had no CrUX data, so origin aggregate is shown.)');
+      lines.push('');
+    }
+    const cwv = report.crux.coreWebVitals;
+    if (cwv.lcp) lines.push(`  LCP:  ${getRatingIcon(cwv.lcp.rating)} ${cwv.lcp.displayValue}`);
+    if (cwv.cls) lines.push(`  CLS:  ${getRatingIcon(cwv.cls.rating)} ${cwv.cls.displayValue}`);
+    if (cwv.fcp) lines.push(`  FCP:  ${getRatingIcon(cwv.fcp.rating)} ${cwv.fcp.displayValue}`);
+    if (cwv.inp) lines.push(`  INP:  ${getRatingIcon(cwv.inp.rating)} ${cwv.inp.displayValue}`);
+    if (cwv.ttfb) lines.push(`  TTFB: ${getRatingIcon(cwv.ttfb.rating)} ${cwv.ttfb.displayValue}`);
+    lines.push('');
+    lines.push(`  Period: ${formatCruxCollectionPeriod(report.crux.collectionPeriod)}`);
+    lines.push('  Legend: ✓ Good  ⚠ Needs Improvement  ✗ Poor');
+    lines.push('');
+  }
+
+  // Lighthouse Scores (lab data from PageSpeed)
+  if (report.pageSpeed) {
     lines.push('─'.repeat(70));
     lines.push('                      LIGHTHOUSE SCORES');
     lines.push('─'.repeat(70));
     lines.push('');
-    
     const lh = report.pageSpeed.lighthouseScores;
-    
     if (lh.performance !== null) {
       lines.push(`  Performance:     ${getScoreBar(lh.performance)} ${lh.performance}/100`);
     }

@@ -153,6 +153,13 @@ export interface ScoreBreakdown {
   overall: number;
 }
 
+/** SSL and mixed content verification result (report-only, not logged) */
+export interface SslSecurityCheck {
+  sslValid: boolean;
+  sslError?: string;
+  mixedContent: { hasMixedContent: boolean; insecureUrls: string[] };
+}
+
 /**
  * Complete SEO analysis report
  */
@@ -175,6 +182,13 @@ export interface SEOReport {
     suggestions: string[];
   };
   pageSpeed?: PageSpeedData;
+  /** Real-user Core Web Vitals from Chrome UX Report (CrUX) when API key is set */
+  crux?: CruxData;
+  /** SSL certificate validity and mixed content check (report-only) */
+  sslSecurity?: SslSecurityCheck;
+  /** When CrUX data is not available: reason and when it would become available (PDF report only) */
+  cruxUnavailableReason?: string;
+  cruxWhenAvailable?: string;
 }
 
 // Rating type for Core Web Vitals metrics
@@ -238,4 +252,31 @@ export interface PageSpeedData {
   coreWebVitals: CoreWebVitals;
   lighthouseScores: LighthouseScores;
   audits: LighthouseAudit[];
+}
+
+/** CrUX 28-day collection window (year/month/day) */
+export interface CruxCollectionPeriod {
+  firstDate: { year: number; month: number; day: number };
+  lastDate: { year: number; month: number; day: number };
+}
+
+/**
+ * Real-user Core Web Vitals from Chrome UX Report (CrUX) API.
+ * Same metric shape as lab data for consistent display; source is field data.
+ */
+export interface CruxData {
+  /** Origin when query was by origin (site-level aggregate) */
+  origin?: string;
+  /** Page URL when query was by URL */
+  url?: string;
+  formFactor?: 'PHONE' | 'TABLET' | 'DESKTOP';
+  collectionPeriod: CruxCollectionPeriod;
+  /** CWV metrics derived from CrUX p75; reuses CoreWebVitalMetric for display */
+  coreWebVitals: {
+    lcp: CoreWebVitalMetric | null;
+    cls: CoreWebVitalMetric | null;
+    fcp: CoreWebVitalMetric | null;
+    inp: CoreWebVitalMetric | null;
+    ttfb: CoreWebVitalMetric | null;
+  };
 }
